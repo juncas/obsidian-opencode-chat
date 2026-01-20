@@ -61,43 +61,42 @@ Add the following JSON entry at the **end** of the `community-plugins.json` arra
 
 ## PR Description Template
 
-Use this template when creating the Pull Request:
+When creating the Pull Request, the official PR template will be shown. Here is the **official PR checklist** that you must complete:
 
 ```markdown
-## Plugin Submission
+# I am submitting a new Community Plugin
 
-**Plugin Name:** Claude Chat
-**Plugin ID:** claude-chat-obsidian
-**Repository:** https://github.com/juncas/obsidian-claude-chat
+- [ ] I attest that I have done my best to deliver a high-quality plugin, am proud of the code I have written, and would recommend it to others. I commit to maintaining the plugin and being responsive to bug reports. If I am no longer able to maintain it, I will make reasonable efforts to find a successor maintainer or withdraw the plugin from the directory.
 
-### Description
+## Repo URL
 
-A native chat interface for Claude Code CLI in Obsidian. This plugin brings the power of Claude's AI assistant directly into your Obsidian workspace with a clean, integrated interface.
+Link to my plugin: https://github.com/juncas/obsidian-claude-chat
 
-### Features
-
-- **Multi-Session Conversations:** Create and manage multiple chat sessions simultaneously
-- **Streaming Responses:** Watch Claude's responses stream in real-time
-- **Message Editing:** Edit your messages and regenerate responses
-- **Markdown Rendering:** Full markdown support with syntax highlighting
-- **Export Conversations:** Export your chats to markdown files
-- **Session Management:** Rename, delete, and switch between sessions easily
-
-### Requirements
-
-- Obsidian v0.15.0 or higher
-- Claude Code CLI installed on the system
-- Desktop only (uses Node.js child processes)
-
-### Checklist
-
-- [x] Repository is public
-- [x] Plugin has a valid `manifest.json`
-- [x] Plugin has a `README.md`
-- [x] Plugin has a `LICENSE` file
-- [x] Plugin has at least one release with `main.js`, `manifest.json`, and `styles.css` attached
-- [x] Plugin follows the [plugin submission requirements](https://docs.obsidian.md/Plugins/Releasing/Submission+requirements+for+plugins)
+## Release Checklist
+- [ ] I have tested the plugin on
+  - [ ]  Windows
+  - [ ]  macOS
+  - [ ]  Linux
+  - [ ]  Android _(if applicable)_
+  - [ ]  iOS _(if applicable)_
+- [ ] My GitHub release contains all required files (as individual files, not just in the source.zip / source.tar.gz)
+  - [ ] `main.js`
+  - [ ] `manifest.json`
+  - [ ] `styles.css` _(optional)_
+- [ ] GitHub release name matches the exact version number specified in my manifest.json (_**Note:** Use the exact version number, don't include a prefix `v`_)
+- [ ] The `id` in my `manifest.json` matches the `id` in the `community-plugins.json` file.
+- [ ] My README.md describes the plugin's purpose and provides clear usage instructions.
+- [ ] I have read the developer policies at https://docs.obsidian.md/Developer+policies, and have assessed my plugin's adherence to these policies.
+- [ ] I have read the tips in https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines and have self-reviewed my plugin to avoid these common pitfalls.
+- [ ] I have added a license in the LICENSE file.
+- [ ] My project respects and is compatible with the original license of any code from other plugins that I'm using.
+      I have given proper attribution to these other projects in my `README.md`.
 ```
+
+> **Note:** Before submitting, make sure to:
+> 1. Test the plugin on all supported platforms (Windows, macOS, Linux)
+> 2. Create a release with the exact version number (e.g., `1.0.0`, not `v1.0.0`)
+> 3. Review the [Plugin Guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines)
 
 ## Plugin Manifest Details
 
@@ -129,6 +128,7 @@ According to the official documentation:
 
 - [Obsidian Plugin Submission Guide](https://docs.obsidian.md/Plugins/Releasing/Submit+your+plugin)
 - [Plugin Submission Requirements](https://docs.obsidian.md/Plugins/Releasing/Submission+requirements+for+plugins)
+- [Plugin Guidelines](https://docs.obsidian.md/Plugins/Releasing/Plugin+guidelines) - Tips to avoid common pitfalls
 - [Developer Policies](https://docs.obsidian.md/Developer+policies) - All submissions must conform to these policies
 - [Obsidian Releases Repository](https://github.com/obsidianmd/obsidian-releases)
 - [Community Plugins JSON](https://github.com/obsidianmd/obsidian-releases/blob/master/community-plugins.json)
