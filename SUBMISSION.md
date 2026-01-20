@@ -56,7 +56,8 @@ Add the following JSON entry at the **end** of the `community-plugins.json` arra
 2. Push to your fork
 3. Open a Pull Request to `obsidianmd/obsidian-releases`
 4. Use the following PR title format: `Add plugin: Claude Chat`
-5. Fill out the PR template with the required information
+5. **Important:** When opening the PR, switch to preview mode and select the option to go through the submission checklist
+6. Fill out the PR template with the required information
 
 ## PR Description Template
 
@@ -113,10 +114,22 @@ The current `manifest.json` contains:
 | authorUrl | `https://github.com/juncas` |
 | isDesktopOnly | `true` |
 
+## How Community Plugins Are Pulled
+
+According to the official documentation:
+
+1. Obsidian reads the list of plugins from `community-plugins.json`
+2. The `name`, `author` and `description` fields are used for searching
+3. When users open the plugin detail page, Obsidian pulls `manifest.json` and `README.md` from your GitHub repo
+4. The `manifest.json` in your repo is used to determine the latest version
+5. Actual plugin files are fetched from your GitHub releases (tagged identically to the version in `manifest.json`)
+6. Obsidian downloads `manifest.json`, `main.js`, and `styles.css` (if available) from the release
+
 ## Important Links
 
 - [Obsidian Plugin Submission Guide](https://docs.obsidian.md/Plugins/Releasing/Submit+your+plugin)
 - [Plugin Submission Requirements](https://docs.obsidian.md/Plugins/Releasing/Submission+requirements+for+plugins)
+- [Developer Policies](https://docs.obsidian.md/Developer+policies) - All submissions must conform to these policies
 - [Obsidian Releases Repository](https://github.com/obsidianmd/obsidian-releases)
 - [Community Plugins JSON](https://github.com/obsidianmd/obsidian-releases/blob/master/community-plugins.json)
 
@@ -125,3 +138,10 @@ The current `manifest.json` contains:
 1. Wait for the Obsidian team to review your submission
 2. Address any feedback or required changes
 3. Once merged, your plugin will appear in the Community Plugins browser within 24-48 hours
+
+### Announcing Your Plugin
+
+Once admitted to the plugin browser, you can announce the public availability:
+
+- [Obsidian Forums](https://forum.obsidian.md/c/share-showcase/9) - Post as a showcase
+- [Discord Server](https://discord.gg/veuWUTm) - Post in the `#updates` channel (requires `developer` role)
