@@ -1,226 +1,220 @@
-# Claude Chat for Obsidian
+# OpenCode Chat for Obsidian
 
-A native chat interface for [Claude Code CLI](https://github.com/anthropics/claude-code) in Obsidian. This plugin brings the power of Claude's AI assistant directly into your Obsidian workspace with a clean, integrated interface.
+Native OpenCode chat inside Obsidian with multi-session support, streaming output, tool/diff visibility, and inline permission/question handling.
 
-![Claude Chat](https://img.shields.io/badge/Obsidian-1.0.0-brightgreen) ![License](https://img.shields.io/badge/license-MIT-blue)
+## Agent-First Quick Reference
 
-## Features
+| Key | Value |
+| --- | --- |
+| Plugin name | `OpenCode Chat` |
+| Plugin ID | `claude-chat-obsidian` |
+| Entry source | `src/main.ts` |
+| Build output | `main.js` |
+| Required install artifacts | `manifest.json`, `main.js`, `styles.css`, `opencode-skills/` |
+| Min Obsidian version | `0.15.0` |
+| Desktop only | `true` |
+| Runtime dependency | `opencode` CLI (`opencode serve`) |
+| Persisted data | `<vault>/.obsidian/plugins/claude-chat-obsidian/data.json` |
+| Build command | `npm run build` |
+| Dev watch command | `npm run dev` |
 
-- **Multi-Session Conversations** - Create and manage multiple chat sessions simultaneously
-- **Streaming Responses** - Watch Claude's responses stream in real-time
-- **Message Editing** - Edit your messages and regenerate responses
-- **Markdown Rendering** - Full markdown support with syntax highlighting
-- **Export Conversations** - Export your chats to markdown files
-- **Session Management** - Rename, delete, and switch between sessions easily
-- **Keyboard Shortcuts** - Quick access to common actions
-- **Dark/Light Theme** - Automatically adapts to your Obsidian theme
+For fully scripted build/install steps, see [`instruction.md`](./instruction.md).
+
+## Current Capabilities
+
+- Multi-session conversations with persisted session metadata.
+- Streaming assistant text from OpenCode server events.
+- Inline rendering for:
+  - tool calls and tool outputs,
+  - file diffs,
+  - permission prompts,
+  - multiple-choice questions.
+- Message editing and regeneration.
+- `@` file mention with vault file autocomplete.
+- Markdown rendering and export-to-markdown.
+- Bundled OpenCode skills auto-synced into vault-level skills directory at startup.
+
+## Runtime Architecture (Updated)
+
+This plugin now uses OpenCode HTTP server mode instead of direct one-shot CLI execution:
+
+1. On plugin load, start local server:
+   - `opencode serve --port 14000` (fallback tries more ports).
+2. Connect to SSE stream from `GET /event`.
+3. Create/reuse OpenCode sessions via HTTP APIs.
+4. Send prompts with `POST /session/:id/prompt_async`.
+5. Render incoming event stream (`text`, `tool`, `diff`, `permission`, `question`, `step`).
+
+Key implementation files:
+
+- `src/services/OpenCodeServer.ts` - server process + HTTP + SSE bridge.
+- `src/views/OpenCodeChatView.ts` - main chat workflow and event wiring.
+- `src/ui/ToolCallView.ts` - tool call visualization.
+- `src/ui/FileDiffView.ts` - inline file diff rendering.
+- `src/ui/PermissionDialog.ts` - permission approval UI.
+- `src/ui/QuestionDialog.ts` - question/answer UI.
 
 ## Prerequisites
 
-Before installing this plugin, you need to have **Claude Code CLI** installed on your system.
+Install OpenCode CLI first:
 
-### Installing Claude Code CLI
+```bash
+curl -fsSL https://opencode.ai/install | bash
+opencode --version
+```
 
-1. Install Node.js (v18 or higher) from [nodejs.org](https://nodejs.org/)
+If Obsidian cannot find `opencode`, ensure `~/.opencode/bin` is in `PATH`:
 
-2. Install Claude Code CLI globally:
-   ```bash
-   npm install -g @anthropic-ai/claude-code
-   ```
-
-3. Authenticate with Claude:
-   ```bash
-   claude auth login
-   ```
-
-4. Verify installation:
-   ```bash
-   claude --version
-   ```
-
-For more details, visit the [official Claude Code documentation](https://github.com/anthropics/claude-code).
+```bash
+export PATH="$HOME/.opencode/bin:$PATH"
+```
 
 ## Installation
 
-### Method 1: Obsidian Plugin Manager (Recommended)
+### Method A: Install from Release
 
-1. Open Obsidian Settings
-2. Go to **Community Plugins**
-3. Turn on **Community Plugins**
-4. Click **Browse** and search for "Claude Chat"
-5. Click **Install** and then **Enable**
+1. Download latest package from [Releases](https://github.com/juncas/obsidian-claude-chat/releases).
+2. Extract into `<vault>/.obsidian/plugins/claude-chat-obsidian/`.
+3. Ensure files exist:
+   - `manifest.json`
+   - `main.js`
+   - `styles.css`
+   - `opencode-skills/`
+4. Restart Obsidian and enable `OpenCode Chat`.
 
-### Method 2: Manual Installation
+### Method B: Build from Source (Recommended for Development/Agents)
 
-1. Download the latest release from the [Releases](https://github.com/juncas/obsidian-claude-chat/releases) page
-2. Extract the downloaded zip file
-3. Move the extracted folder to your vault's `.obsidian/plugins/` directory
-4. Restart Obsidian
-5. Enable the plugin in Settings > Community Plugins
+```bash
+git clone https://github.com/juncas/obsidian-claude-chat.git
+cd obsidian-claude-chat
+npm ci
+npm run build
+```
 
-### Method 3: From Source
+Copy build artifacts into your vault plugin directory:
 
-1. Clone this repository:
-   ```bash
-   git clone https://github.com/juncas/obsidian-claude-chat.git
-   ```
+```bash
+VAULT_PATH="/absolute/path/to/your/vault"
+PLUGIN_DIR="$VAULT_PATH/.obsidian/plugins/claude-chat-obsidian"
 
-2. Install dependencies:
-   ```bash
-   cd obsidian-claude-chat
-   npm install
-   ```
+mkdir -p "$PLUGIN_DIR"
+cp main.js manifest.json styles.css "$PLUGIN_DIR/"
+mkdir -p "$PLUGIN_DIR/opencode-skills"
+cp -R opencode-skills/. "$PLUGIN_DIR/opencode-skills/"
+```
 
-3. Build the plugin:
-   ```bash
-   npm run build
-   ```
+Then restart Obsidian and enable the plugin.
 
-4. Copy the entire folder to your vault's `.obsidian/plugins/` directory
-5. Enable the plugin in Obsidian
+## Skills
+
+Bundled skills live in:
+
+```text
+opencode-skills/
+  evidence-qa/
+    SKILL.md
+  kb-health-audit/
+    SKILL.md
+```
+
+On plugin startup, these bundled skills are copied to:
+
+```text
+<vault>/.opencode/skills/<skill-name>/SKILL.md
+```
+
+This allows OpenCode to discover and use the skills without manual copying.
 
 ## Usage
 
-### Opening the Chat Interface
+Open the chat panel by either:
 
-There are several ways to open Claude Chat:
+- command palette: `Open OpenCode Chat`
+- ribbon icon
+- custom hotkey
 
-- **Command Palette**: Press `Ctrl/Cmd + P` and type "Open Claude Chat"
-- **Ribbon Icon**: Click the Claude icon in the left ribbon
-- **Hotkey**: Set a custom hotkey in Settings
+Common actions:
 
-### Chatting with Claude
-
-1. Type your message in the input box at the bottom
-2. Press `Enter` to send (or `Shift + Enter` for a new line)
-3. Watch Claude's response stream in real-time
-4. Use the stop button to interrupt generation
-
-### Managing Sessions
-
-- **New Session**: Click the `+` tab or press `Ctrl/Cmd + Shift + N`
-- **Switch Sessions**: Click on a session tab
-- **Rename Session**: Right-click on a tab and select "Rename"
-- **Delete Session**: Right-click on a tab and select "Delete"
-
-### Editing Messages
-
-1. Hover over any message (yours or Claude's)
-2. Click the edit icon
-3. Modify the message
-4. Press `Enter` to regenerate the response
-
-### Exporting Conversations
-
-- Use the command palette and type "Export conversation to markdown"
-- The chat will be saved as a markdown file in your vault
-
-## Keyboard Shortcuts
-
-| Command | Windows/Linux | macOS |
-|---------|---------------|-------|
-| Open Claude Chat | `Ctrl + Shift + C` | `Cmd + Shift + C` |
-| New Session | `Ctrl + Shift + N` | `Cmd + Shift + N` |
-| Clear History | `Ctrl + Shift + D` | `Cmd + Shift + D` |
-| Focus Input | `Ctrl + Shift + /` | `Cmd + Shift + /` |
-| Stop Generation | `Escape` | `Escape` |
-
-*You can customize these shortcuts in Obsidian's Hotkey settings*
-
-## Configuration
-
-The plugin stores all conversation data in your vault's `.obsidian/plugins/claude-chat-obsidian/` directory. Data includes:
-
-- Active session
-- Chat history
-- Session metadata
-
-This data is synced across devices if you use Obsidian Sync or a cloud-synced vault.
+- `Enter` send message, `Shift+Enter` new line.
+- Type `@` to insert vault files.
+- `Escape` stop generation.
+- `Ctrl/Cmd + Shift + N` new session.
+- `Ctrl/Cmd + K` clear history.
+- `Ctrl/Cmd + L` focus input.
+- `Ctrl/Cmd + Shift + E` export conversation.
 
 ## Development
 
-### Project Structure
-
-```
-claude-chat-obsidian/
-├── src/
-│   ├── main.ts              # Plugin entry point
-│   ├── types/               # TypeScript type definitions
-│   ├── services/            # Business logic (ClaudeProcess, SessionManager)
-│   ├── ui/                  # UI components (ChatInput, MessageContainer, etc.)
-│   └── views/               # Main chat view
-├── styles.css               # Plugin styles
-├── manifest.json            # Plugin manifest
-├── package.json             # NPM configuration
-└── tsconfig.json            # TypeScript configuration
-```
-
-### Building for Development
+### Scripts
 
 ```bash
-npm run dev
+npm run dev      # esbuild watch mode
+npm run build    # type-check + production bundle
+npm run lint
+npm run lint:fix
 ```
 
-This runs esbuild in watch mode, automatically rebuilding when you make changes.
+### Project Layout
 
-### Building for Production
-
-```bash
-npm run build
+```text
+src/
+  main.ts
+  services/
+    OpenCodeServer.ts
+    SessionManager.ts
+  types/
+    index.ts
+    opencode.ts
+  ui/
+    ChatHeader.ts
+    ChatInput.ts
+    FileDiffView.ts
+    MessageContainer.ts
+    PermissionDialog.ts
+    QuestionDialog.ts
+    SessionTabs.ts
+    ToolCallView.ts
+  views/
+    OpenCodeChatView.ts
+opencode-skills/
+manifest.json
+styles.css
+main.js
 ```
 
 ## Troubleshooting
 
-### "Claude CLI not found" Error
+### "OpenCode CLI not found"
 
-Make sure Claude Code CLI is installed and accessible:
 ```bash
-claude --version
+opencode --version
 ```
 
-If not found, reinstall it:
+If not found, reinstall:
+
 ```bash
-npm install -g @anthropic-ai/claude-code
+curl -fsSL https://opencode.ai/install | bash
 ```
 
-### "Authentication Required" Error
+Then fully restart Obsidian.
 
-Run the authentication command:
-```bash
-claude auth login
-```
+### Chat view opens but no response
 
-### Plugin Not Appearing
+Check:
 
-1. Check that Community Plugins are enabled in Settings
-2. Verify the plugin is installed in the correct directory
-3. Check Obsidian's developer console for errors (Ctrl/Cmd + Shift + I)
+1. OpenCode server can run in your vault path.
+2. Obsidian developer console (`Ctrl/Cmd + Shift + I`) for plugin errors.
+3. Plugin files are installed under the correct plugin ID directory.
 
-## Contributing
+### Skills not loaded
 
-Contributions are welcome! Please feel free to submit a Pull Request.
+Check both paths:
 
-1. Fork the repository
-2. Create your feature branch (`git checkout -b feature/AmazingFeature`)
-3. Commit your changes (`git commit -m 'Add some AmazingFeature'`)
-4. Push to the branch (`git push origin feature/AmazingFeature`)
-5. Open a Pull Request
+- `<vault>/.obsidian/plugins/claude-chat-obsidian/opencode-skills/`
+- `<vault>/.opencode/skills/`
 
-## Acknowledgments
-
-- Built with [Obsidian API](https://github.com/obsidianmd/obsidian-api)
-- Powered by [Claude Code CLI](https://github.com/anthropics/claude-code)
-- Inspired by the need for a native Claude interface in Obsidian
+If needed, restart Obsidian to trigger startup sync again.
 
 ## License
 
-This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
-
-## Support
-
-- **Issues**: [GitHub Issues](https://github.com/juncas/obsidian-claude-chat/issues)
-- **Discussions**: [GitHub Discussions](https://github.com/juncas/obsidian-claude-chat/discussions)
-
----
-
-Made with [Obsidian](https://obsidian.md) and [Claude](https://claude.ai)
+MIT. See [`LICENSE`](./LICENSE).
