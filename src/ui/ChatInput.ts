@@ -1,3 +1,5 @@
+import { App } from 'obsidian';
+
 export class ChatInput {
     private containerEl: HTMLElement;
     private inputWrapperEl: HTMLElement;
@@ -9,9 +11,16 @@ export class ChatInput {
     private commandHistory: string[] = [];
     private historyIndex: number = -1;
     private tempInput: string = ''; // Store current input when navigating history
+    private mentionMenuEl: HTMLElement;
+    private mentionCandidates: string[] = [];
+    private mentionSelectedIndex: number = 0;
+    private mentionStartIndex: number = -1;
+    private mentionEndIndex: number = -1;
+    private readonly maxMentionResults = 8;
 
     constructor(
         containerEl: HTMLElement,
+        private app: App,
         onSubmit: (command: string) => Promise<void>,
         onStop: () => void
     ) {
@@ -34,7 +43,7 @@ export class ChatInput {
         this.inputEl = this.inputWrapperEl.createEl('textarea', {
             cls: 'claude-chat-input',
             attr: {
-                placeholder: 'Enter a command for Claude...',
+                placeholder: 'Enter a command for OpenCode... (type @ to reference files)',
                 rows: '1',
             },
         });
@@ -42,6 +51,25 @@ export class ChatInput {
         // Auto-resize textarea as user types
         this.inputEl.addEventListener('input', () => {
             this.autoResize();
+            this.updateMentionSuggestions();
+        });
+
+        this.inputEl.addEventListener('click', () => {
+            this.updateMentionSuggestions();
+        });
+
+        this.inputEl.addEventListener('keyup', (e) => {
+            if (e.key === 'ArrowLeft' || e.key === 'ArrowRight' || e.key === 'Home' || e.key === 'End') {
+                this.updateMentionSuggestions();
+            }
+        });
+
+        this.inputEl.addEventListener('blur', () => {
+            window.setTimeout(() => {
+                if (document.activeElement !== this.inputEl) {
+                    this.closeMentionMenu();
+                }
+            }, 100);
         });
 
         // Send button
@@ -65,6 +93,10 @@ export class ChatInput {
 
         // Handle Enter key (Shift+Enter for new line) and arrow keys for history
         this.inputEl.addEventListener('keydown', (e) => {
+            if (this.handleMentionKeydown(e)) {
+                return;
+            }
+
             if (e.key === 'Enter' && !e.shiftKey) {
                 e.preventDefault();
                 this.handleSubmit();
@@ -76,6 +108,11 @@ export class ChatInput {
                 this.navigateHistory(1);
             }
         });
+
+        this.mentionMenuEl = inputContainer.createEl('div', {
+            cls: 'claude-chat-mention-menu',
+        });
+        this.mentionMenuEl.style.display = 'none';
 
         // Focus input on container click
         inputContainer.addEventListener('click', (e) => {
@@ -129,6 +166,7 @@ export class ChatInput {
             this.autoResize();
             this.historyIndex = -1; // Reset history index
             this.tempInput = '';
+            this.closeMentionMenu();
             await this.onSubmit(command);
         }
     }
@@ -178,6 +216,9 @@ export class ChatInput {
     setDisabled(disabled: boolean) {
         this.inputEl.disabled = disabled;
         this.sendButtonEl.disabled = disabled;
+        if (disabled) {
+            this.closeMentionMenu();
+        }
     }
 
     setProcessing(isProcessing: boolean) {
@@ -186,6 +227,7 @@ export class ChatInput {
             this.sendButtonEl.classList.add('claude-hidden');
             this.createStopButton();
             this.inputEl.disabled = true;
+            this.closeMentionMenu();
         } else {
             // Show send button, hide stop button
             this.sendButtonEl.classList.remove('claude-hidden');
@@ -201,5 +243,224 @@ export class ChatInput {
     setValue(value: string) {
         this.inputEl.value = value;
         this.autoResize();
+        this.updateMentionSuggestions();
+    }
+
+    private handleMentionKeydown(e: KeyboardEvent): boolean {
+        const mentionOpen = this.isMentionMenuOpen();
+        if (!mentionOpen) {
+            return false;
+        }
+
+        if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            this.moveMentionSelection(1);
+            return true;
+        }
+
+        if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            this.moveMentionSelection(-1);
+            return true;
+        }
+
+        if (e.key === 'Enter' || e.key === 'Tab') {
+            e.preventDefault();
+            this.selectMention(this.mentionSelectedIndex);
+            return true;
+        }
+
+        if (e.key === 'Escape') {
+            e.preventDefault();
+            this.closeMentionMenu();
+            return true;
+        }
+
+        return false;
+    }
+
+    private updateMentionSuggestions(): void {
+        const context = this.getMentionContext();
+        if (!context) {
+            this.closeMentionMenu();
+            return;
+        }
+
+        const candidates = this.getMentionCandidates(context.query);
+        if (candidates.length === 0) {
+            this.closeMentionMenu();
+            return;
+        }
+
+        this.mentionStartIndex = context.start;
+        this.mentionEndIndex = context.end;
+        this.mentionCandidates = candidates;
+        this.mentionSelectedIndex = 0;
+        this.renderMentionMenu();
+    }
+
+    private getMentionContext(): { start: number; end: number; query: string } | null {
+        if (this.inputEl.selectionStart !== this.inputEl.selectionEnd) {
+            return null;
+        }
+
+        const cursor = this.inputEl.selectionStart ?? this.inputEl.value.length;
+        const prefix = this.inputEl.value.slice(0, cursor);
+        const match = prefix.match(/(^|\s)@([^\s@]*)$/);
+        if (!match) {
+            return null;
+        }
+
+        const query = match[2] || '';
+        const start = cursor - query.length - 1;
+        if (start < 0) {
+            return null;
+        }
+
+        return {
+            start,
+            end: cursor,
+            query,
+        };
+    }
+
+    private getMentionCandidates(query: string): string[] {
+        const normalizedQuery = query.replace(/^"+/, '').replace(/"/g, '').toLowerCase();
+        const files = this.app.vault.getFiles();
+
+        if (normalizedQuery.length === 0) {
+            return files
+                .slice()
+                .sort((a, b) => b.stat.mtime - a.stat.mtime)
+                .slice(0, this.maxMentionResults)
+                .map((file) => file.path);
+        }
+
+        const scored = files
+            .map((file) => {
+                const path = file.path;
+                const pathLower = path.toLowerCase();
+                const basenameLower = file.basename.toLowerCase();
+
+                let score = -1;
+                if (basenameLower === normalizedQuery) {
+                    score = 0;
+                } else if (basenameLower.startsWith(normalizedQuery)) {
+                    score = 1;
+                } else if (pathLower.startsWith(normalizedQuery)) {
+                    score = 2;
+                } else if (basenameLower.includes(normalizedQuery)) {
+                    score = 3;
+                } else if (pathLower.includes(normalizedQuery)) {
+                    score = 4;
+                }
+
+                return { path, score };
+            })
+            .filter((item) => item.score >= 0)
+            .sort((a, b) => {
+                if (a.score !== b.score) return a.score - b.score;
+                if (a.path.length !== b.path.length) return a.path.length - b.path.length;
+                return a.path.localeCompare(b.path);
+            })
+            .slice(0, this.maxMentionResults)
+            .map((item) => item.path);
+
+        return scored;
+    }
+
+    private renderMentionMenu(): void {
+        this.mentionMenuEl.empty();
+
+        this.mentionCandidates.forEach((path, index) => {
+            const safePath = (path || '').trim() || '(unknown file)';
+            const fileName = safePath.split('/').pop()?.trim() || safePath;
+
+            const itemEl = this.mentionMenuEl.createEl('div', {
+                cls: 'claude-chat-mention-item',
+            });
+            itemEl.setAttribute('role', 'option');
+            itemEl.setAttribute('tabindex', '-1');
+            itemEl.setAttribute('aria-label', safePath);
+            itemEl.setAttribute('title', safePath);
+            itemEl.setAttribute('data-name', fileName);
+            itemEl.setAttribute('data-path', safePath);
+
+            if (index === this.mentionSelectedIndex) {
+                itemEl.addClass('is-selected');
+            }
+
+            itemEl.addEventListener('mouseenter', () => {
+                this.mentionSelectedIndex = index;
+                this.updateMentionSelectionClasses();
+            });
+
+            itemEl.addEventListener('mousedown', (event) => {
+                event.preventDefault();
+                this.selectMention(index);
+            });
+        });
+
+        this.mentionMenuEl.style.display = 'block';
+    }
+
+    private updateMentionSelectionClasses(): void {
+        const itemEls = this.mentionMenuEl.querySelectorAll('.claude-chat-mention-item');
+        itemEls.forEach((itemEl, index) => {
+            itemEl.classList.toggle('is-selected', index === this.mentionSelectedIndex);
+        });
+
+        const activeEl = itemEls[this.mentionSelectedIndex] as HTMLElement | undefined;
+        activeEl?.scrollIntoView({ block: 'nearest' });
+    }
+
+    private moveMentionSelection(delta: number): void {
+        if (this.mentionCandidates.length === 0) {
+            return;
+        }
+
+        const total = this.mentionCandidates.length;
+        this.mentionSelectedIndex = (this.mentionSelectedIndex + delta + total) % total;
+        this.updateMentionSelectionClasses();
+    }
+
+    private selectMention(index: number): void {
+        const selectedPath = this.mentionCandidates[index];
+        if (!selectedPath || this.mentionStartIndex < 0 || this.mentionEndIndex < 0) {
+            return;
+        }
+
+        const before = this.inputEl.value.slice(0, this.mentionStartIndex);
+        const after = this.inputEl.value.slice(this.mentionEndIndex);
+        const mentionText = this.formatMentionText(selectedPath);
+        const appendSpace = after.length > 0 && !/^\s/.test(after) ? ' ' : '';
+        const nextValue = `${before}${mentionText}${appendSpace}${after}`;
+        const nextCursor = before.length + mentionText.length + appendSpace.length;
+
+        this.inputEl.value = nextValue;
+        this.autoResize();
+        this.inputEl.focus();
+        this.inputEl.setSelectionRange(nextCursor, nextCursor);
+        this.closeMentionMenu();
+    }
+
+    private formatMentionText(path: string): string {
+        if (/\s/.test(path)) {
+            return `@"${path}"`;
+        }
+        return `@${path}`;
+    }
+
+    private closeMentionMenu(): void {
+        this.mentionCandidates = [];
+        this.mentionSelectedIndex = 0;
+        this.mentionStartIndex = -1;
+        this.mentionEndIndex = -1;
+        this.mentionMenuEl.empty();
+        this.mentionMenuEl.style.display = 'none';
+    }
+
+    private isMentionMenuOpen(): boolean {
+        return this.mentionMenuEl.style.display !== 'none' && this.mentionCandidates.length > 0;
     }
 }

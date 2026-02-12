@@ -1,5 +1,10 @@
 import { ChatMessage } from '../types';
-import { MarkdownRenderer, Component, TFile } from 'obsidian';
+import { MarkdownRenderer, Component, TFile, App, WorkspaceLeaf, Notice } from 'obsidian';
+import { ToolPart, PermissionRequest, PermissionResponse, QuestionRequest, StepStartPart, StepFinishPart, FileDiff } from '../types/opencode';
+import { ToolCallView } from './ToolCallView';
+import { PermissionDialog } from './PermissionDialog';
+import { QuestionDialog } from './QuestionDialog';
+import { FileDiffView } from './FileDiffView';
 
 export class MessageContainer {
     private containerEl: HTMLElement;
@@ -8,13 +13,19 @@ export class MessageContainer {
     private currentMessageBuffer: string = '';
     private currentCursorEl: HTMLElement | null = null;
     private currentMessageEl: HTMLElement | null = null;
+    private currentActivitiesEl: HTMLElement | null = null;
     private scrollLocked: boolean = false;
     private scrollBottomButton: HTMLElement | null = null;
     private messages: ChatMessage[] = []; // Store all messages for export
     private messageElements: Map<HTMLElement, ChatMessage> = new Map(); // Track message elements
     private onEditMessage?: (index: number, content: string) => void;
+    private toolCallViews: Map<string, ToolCallView> = new Map();
+    private fileDiffViews: Map<string, FileDiffView> = new Map();
+    private activeDiffHostEl: HTMLElement | null = null;
+    private permissionDialogs: Map<string, PermissionDialog> = new Map();
+    private questionDialogs: Map<string, QuestionDialog> = new Map();
 
-    constructor(containerEl: HTMLElement, private app: any) {
+    constructor(containerEl: HTMLElement, private app: App) {
         this.containerEl = containerEl;
         this.messagesEl = this.containerEl.createEl('div', { cls: 'claude-chat-messages' });
 
@@ -76,118 +87,219 @@ export class MessageContainer {
     }
 
     private setupLinkClickHandler() {
-        // Use event delegation to handle clicks on all links
         this.messagesEl.addEventListener('click', (e) => {
             const target = e.target as HTMLElement;
-
-            // Handle anchor links
-            if (target.tagName === 'A') {
+            const linkEl = target.closest('a') as HTMLAnchorElement | null;
+            if (linkEl) {
                 e.preventDefault();
-                this.handleLinkClick(target as HTMLAnchorElement);
+                this.handleLinkClick(linkEl, e as MouseEvent);
                 return;
             }
 
-            // Handle internal-link class (wiki links)
-            if (target.classList.contains('internal-link')) {
+            const internalLinkEl = target.closest('.internal-link') as HTMLElement | null;
+            if (internalLinkEl) {
                 e.preventDefault();
-                this.handleInternalLinkClick(target);
+                this.handleInternalLinkClick(internalLinkEl, e as MouseEvent);
                 return;
+            }
+
+            const inlineRefEl = target.closest('code.claude-inline-reference') as HTMLElement | null;
+            if (inlineRefEl) {
+                e.preventDefault();
+                this.handleInlineReferenceClick(inlineRefEl, e as MouseEvent);
             }
         });
     }
 
-    private handleLinkClick(linkEl: HTMLAnchorElement) {
+    private handleLinkClick(linkEl: HTMLAnchorElement, event: MouseEvent) {
         const href = linkEl.getAttribute('href');
-        if (!href) return;
-
-        // Check if it's an internal link (starts with # or is relative)
-        if (href.startsWith('#')) {
-            // Anchor link - do nothing or scroll to section
-            console.log('Anchor link:', href);
+        if (!href || href.startsWith('#')) {
             return;
         }
 
-        // Check if it looks like a file path
-        if (href.includes('.md') || href.includes('.png') || href.includes('.jpg')) {
-            this.tryOpenFile(href);
+        if (this.isExternalHref(href)) {
+            window.open(href, '_blank');
             return;
         }
 
-        // External link - open in browser
-        window.open(href, '_blank');
+        if (this.isModifierClick(event)) {
+            this.showFilePreview(href, event, linkEl);
+            return;
+        }
+
+        this.tryOpenFile(href);
     }
 
-    private handleInternalLinkClick(linkEl: HTMLElement) {
-        const linkText = linkEl.textContent;
-        if (!linkText) return;
+    private handleInternalLinkClick(linkEl: HTMLElement, event: MouseEvent) {
+        const linkText = linkEl.getAttribute('data-href') || linkEl.textContent;
+        if (!linkText) {
+            return;
+        }
+
+        if (this.isModifierClick(event)) {
+            this.showFilePreview(linkText, event, linkEl);
+            return;
+        }
 
         this.tryOpenFile(linkText);
     }
 
-    private tryOpenFile(linkText: string) {
-        // Clean up the link text - remove wiki link syntax
-        let fileName = linkText
-            .replace(/^\[\[/, '')   // Remove opening [[
-            .replace(/\]\]$/, '')   // Remove closing ]]
-            .replace(/\|.*$/, '')   // Remove alias (everything after |)
-            .replace(/#.*/, '')     // Remove heading anchor
-            .trim();
+    private isModifierClick(event: MouseEvent): boolean {
+        return event.metaKey || event.ctrlKey;
+    }
 
-        // Try to find the file in the vault
+    private isExternalHref(href: string): boolean {
+        return /^(https?:\/\/|mailto:|obsidian:\/\/)/i.test(href);
+    }
+
+    private showFilePreview(linkText: string, event: MouseEvent, targetEl: HTMLElement) {
+        const targetFile = this.resolveFileLink(linkText);
+        if (!targetFile) {
+            const normalized = this.normalizeFileLink(linkText);
+            if (normalized) {
+                new Notice(`File not found: ${normalized}`);
+            }
+            return;
+        }
+
+        const activeFile = this.app.workspace.getActiveFile();
+        this.app.workspace.trigger('hover-link', {
+            event,
+            source: 'opencode-chat',
+            hoverParent: this.messagesEl,
+            targetEl,
+            linktext: targetFile.path,
+            sourcePath: activeFile?.path || '',
+        });
+    }
+
+    private tryOpenFile(linkText: string) {
+        const targetFile = this.resolveFileLink(linkText);
+        if (targetFile instanceof TFile) {
+            this.openFileInMainPane(targetFile);
+            return;
+        }
+
+        const normalized = this.normalizeFileLink(linkText);
+        new Notice(`File not found: ${normalized || linkText}`);
+    }
+
+    private resolveFileLink(linkText: string): TFile | null {
+        const fileName = this.normalizeFileLink(linkText);
+        if (!fileName) {
+            return null;
+        }
+
         const metadataCache = this.app.metadataCache;
         const vault = this.app.vault;
 
-        // First, try exact match
         let targetFile = metadataCache.getFirstLinkpathDest(fileName, '');
-
-        // If not found, try with .md extension
         if (!targetFile && !fileName.endsWith('.md')) {
-            targetFile = metadataCache.getFirstLinkpathDest(fileName + '.md', '');
+            targetFile = metadataCache.getFirstLinkpathDest(`${fileName}.md`, '');
         }
 
-        // If still not found, try fuzzy search
         if (!targetFile) {
             const allFiles = vault.getMarkdownFiles();
             targetFile = allFiles.find((file: TFile) => {
                 const baseName = file.basename.toLowerCase();
                 const searchName = fileName.toLowerCase();
                 return baseName === searchName || baseName.includes(searchName);
-            });
+            }) || null;
         }
 
-        if (targetFile instanceof TFile) {
-            // Open the file in the main leaf
-            this.openFileInMainPane(targetFile);
-        } else {
-            console.log('File not found:', fileName);
-            // Could show a subtle indicator that the file doesn't exist
+        return targetFile instanceof TFile ? targetFile : null;
+    }
+
+    private normalizeFileLink(linkText: string): string {
+        const decoded = this.safeDecodeURIComponent(linkText);
+        return decoded
+            .replace(/^\[\[/, '')
+            .replace(/\]\]$/, '')
+            .replace(/\|.*$/, '')
+            .replace(/#.*/, '')
+            .trim();
+    }
+
+    private safeDecodeURIComponent(input: string): string {
+        try {
+            return decodeURIComponent(input);
+        } catch {
+            return input;
         }
     }
 
-    private openFileInMainPane(file: TFile) {
-        // Get the main workspace leaf (usually the leftmost editor)
-        const workspace = this.app.workspace;
-
-        // Try to reuse existing leaf in main area
-        let leaf = workspace.getActiveViewOfType('markdown');
-
-        if (!leaf) {
-            // If no markdown view is active, get the first leaf in main area
-            const mainLeaves = workspace.getLeavesOfType('markdown');
-            if (mainLeaves.length > 0) {
-                leaf = mainLeaves[0];
-            }
+    private handleInlineReferenceClick(codeEl: HTMLElement, event: MouseEvent): void {
+        const refText = codeEl.textContent?.trim();
+        if (!refText || !this.isModifierClick(event)) {
+            return;
         }
 
-        if (leaf) {
-            // Reuse the existing leaf
-            const leafObj = workspace.getLeafById(leaf.id);
-            if (leafObj) {
-                leafObj.openFile(file as TFile);
+        const normalized = this.safeDecodeURIComponent(refText);
+        if (this.isExternalHref(normalized)) {
+            window.open(normalized, '_blank');
+            return;
+        }
+
+        this.showFilePreview(normalized, event, codeEl);
+    }
+
+    private enhanceInlineReferences(container: HTMLElement): void {
+        const inlineCodeEls = container.querySelectorAll('code');
+        inlineCodeEls.forEach((codeEl) => {
+            if (codeEl.closest('pre')) {
+                return;
             }
+
+            const rawText = codeEl.textContent?.trim() || '';
+            if (!rawText) {
+                return;
+            }
+
+            const normalized = this.safeDecodeURIComponent(rawText);
+            if (this.isExternalHref(normalized) || this.looksLikeFileReference(normalized)) {
+                codeEl.classList.add('claude-inline-reference');
+                codeEl.setAttribute('title', 'Cmd/Ctrl + click to preview/open');
+            }
+        });
+    }
+
+    private looksLikeFileReference(value: string): boolean {
+        if (!value || value.includes('\n') || value.length > 240) {
+            return false;
+        }
+
+        if (this.isExternalHref(value) || value.startsWith('#')) {
+            return false;
+        }
+
+        if (/^[a-zA-Z0-9_-]+\(\)$/.test(value)) {
+            return false;
+        }
+
+        if (value.startsWith('./') || value.startsWith('../') || value.startsWith('/')) {
+            return true;
+        }
+
+        if (value.includes('/')) {
+            return true;
+        }
+
+        return /\.[a-zA-Z0-9_-]{1,12}$/.test(value);
+    }
+
+    private openFileInMainPane(file: TFile) {
+        const workspace = this.app.workspace;
+
+        const leaves = workspace.getLeavesOfType('markdown');
+        let targetLeaf: WorkspaceLeaf | null = leaves.length > 0 ? leaves[0] : null;
+
+        if (targetLeaf) {
+            targetLeaf.openFile(file);
         } else {
-            // Fallback: open in new leaf in main area
-            (workspace.getLeaf(false) as any).openFile(file as TFile);
+            const newLeaf = workspace.getLeaf(false);
+            if (newLeaf) {
+                newLeaf.openFile(file);
+            }
         }
     }
 
@@ -403,8 +515,14 @@ export class MessageContainer {
             cls: 'claude-chat-message claude-chat-message-assistant',
         });
 
-        // Store the message element for later use
         this.currentMessageEl = messageEl;
+        this.fileDiffViews.clear();
+        this.activeDiffHostEl = null;
+
+        const activitiesEl = messageEl.createEl('div', {
+            cls: 'claude-chat-message-activities',
+        });
+        this.currentActivitiesEl = activitiesEl;
 
         const contentEl = messageEl.createEl('div', {
             cls: 'claude-chat-message-content',
@@ -414,7 +532,6 @@ export class MessageContainer {
             cls: 'claude-chat-message-text',
         });
 
-        // Add thinking indicator initially
         this.addThinkingIndicator(textEl);
 
         const timestampEl = messageEl.createEl('div', {
@@ -453,17 +570,20 @@ export class MessageContainer {
 
             // Render markdown on completion
             if (this.currentMessageBuffer) {
-                // Ensure the buffer ends with a newline for proper formatting
                 if (!this.currentMessageBuffer.endsWith('\n')) {
                     this.currentMessageBuffer += '\n';
                 }
                 this.currentMessageTextEl.empty();
+                const activeFile = this.app.workspace.getActiveFile();
+                const sourcePath = activeFile?.path || '';
                 MarkdownRenderer.renderMarkdown(
                     this.currentMessageBuffer,
                     this.currentMessageTextEl,
-                    '',
+                    sourcePath,
                     new Component()
                 );
+
+                this.enhanceInlineReferences(this.currentMessageTextEl);
 
                 // Add copy buttons to code blocks
                 this.addCopyButtonsToCodeBlocks(this.currentMessageTextEl);
@@ -483,6 +603,7 @@ export class MessageContainer {
         this.currentMessageTextEl = null;
         this.currentMessageBuffer = '';
         this.currentMessageEl = null;
+        this.currentActivitiesEl = null;
     }
 
     private addCopyButtonsToCodeBlocks(container: HTMLElement) {
@@ -623,11 +744,122 @@ export class MessageContainer {
         this.hideScrollBottomButton();
     }
 
+    addToolCall(part: ToolPart): ToolCallView {
+        const existing = this.toolCallViews.get(part.id);
+        if (existing) {
+            existing.update(part);
+            return existing;
+        }
+
+        const targetEl = this.currentActivitiesEl || this.currentMessageEl || this.messagesEl;
+        const view = new ToolCallView(targetEl, part);
+        this.toolCallViews.set(part.id, view);
+        this.scrollToBottom();
+        return view;
+    }
+
+    addFileDiffs(sessionID: string, diffs: FileDiff[]): void {
+        if (diffs.length === 0) {
+            return;
+        }
+
+        const targetEl = this.currentActivitiesEl || this.currentMessageEl || this.messagesEl;
+        const hostChanged = this.activeDiffHostEl !== targetEl;
+        if (hostChanged) {
+            this.fileDiffViews.clear();
+            this.activeDiffHostEl = targetEl;
+        }
+
+        for (const diff of diffs) {
+            const key = `${sessionID}:${diff.file}`;
+            const existing = this.fileDiffViews.get(key);
+            if (existing) {
+                existing.update(diff);
+                continue;
+            }
+
+            const view = new FileDiffView(targetEl, diff);
+            this.fileDiffViews.set(key, view);
+        }
+
+        this.scrollToBottom();
+    }
+
+    addPermissionDialog(
+        request: PermissionRequest,
+        onReply: (response: PermissionResponse) => void
+    ): PermissionDialog {
+        const targetEl = this.currentActivitiesEl || this.currentMessageEl || this.messagesEl;
+        const dialog = new PermissionDialog(targetEl, request, onReply);
+        this.permissionDialogs.set(request.id, dialog);
+        this.scrollToBottom();
+        return dialog;
+    }
+
+    addQuestionDialog(
+        request: QuestionRequest,
+        onReply: (answers: string[][]) => void,
+        onReject: () => void
+    ): QuestionDialog {
+        const targetEl = this.currentActivitiesEl || this.currentMessageEl || this.messagesEl;
+        const dialog = new QuestionDialog(targetEl, request, onReply, onReject);
+        this.questionDialogs.set(request.id, dialog);
+        this.scrollToBottom();
+        return dialog;
+    }
+
+    addStepIndicator(part: StepStartPart | StepFinishPart): void {
+        const targetEl = this.currentActivitiesEl || this.currentMessageEl || this.messagesEl;
+
+        if (part.type === 'step-start') {
+            const el = targetEl.createEl('div', { cls: 'claude-step-indicator claude-step-start' });
+            el.createEl('span', { cls: 'claude-step-icon', text: '▶' });
+            el.createEl('span', { cls: 'claude-step-label', text: part.step || 'Step started' });
+        } else {
+            const el = targetEl.createEl('div', { cls: 'claude-step-indicator claude-step-finish' });
+            el.createEl('span', { cls: 'claude-step-icon', text: '■' });
+
+            let label = part.reason || 'Step finished';
+            if (part.tokens) {
+                const total = part.tokens.input + part.tokens.output;
+                label += ` (${total} tokens)`;
+            }
+            if (part.cost !== undefined) {
+                label += ` · $${part.cost.toFixed(4)}`;
+            }
+            el.createEl('span', { cls: 'claude-step-label', text: label });
+        }
+
+        this.scrollToBottom();
+    }
+
     clear() {
+        for (const view of this.toolCallViews.values()) {
+            view.destroy();
+        }
+        this.toolCallViews.clear();
+
+        for (const view of this.fileDiffViews.values()) {
+            view.destroy();
+        }
+        this.fileDiffViews.clear();
+        this.activeDiffHostEl = null;
+
+        for (const dialog of this.permissionDialogs.values()) {
+            dialog.destroy();
+        }
+        this.permissionDialogs.clear();
+
+        for (const dialog of this.questionDialogs.values()) {
+            dialog.destroy();
+        }
+        this.questionDialogs.clear();
+
         this.messagesEl.empty();
-        this.messages = []; // Clear stored messages
+        this.messages = [];
         this.currentMessageTextEl = null;
         this.currentMessageBuffer = '';
+        this.currentActivitiesEl = null;
         this.scrollLocked = false;
         this.hideScrollBottomButton();
     }

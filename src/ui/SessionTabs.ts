@@ -26,22 +26,18 @@ export class SessionTabs {
         this.onNewSession = callbacks.onNewSession;
         this.onSessionDelete = callbacks.onSessionDelete;
         this.onSessionRename = callbacks.onSessionRename;
-        console.log('SessionTabs: Constructor called, container:', containerEl);
         this.render();
     }
 
     updateSessions(sessions: Session[], currentSessionId: string | null) {
         this.sessions = sessions;
         this.currentSessionId = currentSessionId;
-        console.log('SessionTabs: updateSessions called with', sessions.length, 'sessions');
         this.render();
     }
 
     private render() {
         this.containerEl.empty();
         this.containerEl.addClass('claude-session-tabs');
-
-        console.log('SessionTabs: render() called, sessions:', this.sessions.length);
 
         // Tabs container
         const tabsContainer = this.containerEl.createEl('div', {
@@ -85,7 +81,6 @@ export class SessionTabs {
             }
         });
 
-        console.log('SessionTabs: render() complete');
     }
 
     private createTab(session: Session): HTMLElement {
