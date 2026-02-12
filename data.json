@@ -1,0 +1,16 @@
+{
+  "sessionId": null,
+  "version": "1.0.0",
+  "sessions": [
+    {
+      "id": "session-1770922998328-ie6k7p40e",
+      "name": "Session 1",
+      "sessionId": null,
+      "serverSessionId": null,
+      "createdAt": "2026-02-12T19:03:18.329Z",
+      "updatedAt": "2026-02-12T19:03:18.329Z",
+      "messages": []
+    }
+  ],
+  "currentSessionId": "session-1770922998328-ie6k7p40e"
+}
