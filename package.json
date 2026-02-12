@@ -1,7 +1,7 @@
 {
   "name": "claude-chat-obsidian",
   "version": "1.0.0",
-  "description": "Chat interface for Claude Code commands in Obsidian",
+  "description": "Chat interface for OpenCode commands in Obsidian",
   "main": "main.js",
   "scripts": {
     "dev": "node esbuild.config.mjs",

@@ -1,9 +1,9 @@
 {
   "id": "claude-chat-obsidian",
-  "name": "Claude Chat",
+  "name": "OpenCode Chat",
   "version": "1.0.0",
   "minAppVersion": "0.15.0",
-  "description": "A native chat interface for Claude Code CLI in Obsidian. Supports multi-session conversations, streaming responses, message editing, and markdown export.",
+  "description": "A native chat interface for OpenCode CLI in Obsidian. Supports multi-session conversations, streaming responses, message editing, and markdown export.",
   "author": "juncas",
   "authorUrl": "https://github.com/juncas",
   "isDesktopOnly": true

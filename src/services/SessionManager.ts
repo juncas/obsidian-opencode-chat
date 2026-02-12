@@ -66,6 +66,7 @@ export class SessionManager {
             id: this.generateId(),
             name,
             sessionId: null,
+            serverSessionId: null,
             createdAt: new Date(),
             updatedAt: new Date(),
             messages: [],
@@ -139,7 +140,7 @@ export class SessionManager {
     }
 
     /**
-     * Update the Claude Code CLI session ID for the current session
+     * Update the OpenCode CLI session ID for the current session
      */
     updateCliSessionId(sessionId: string | null): void {
         const session = this.getCurrentSession();
@@ -148,6 +149,20 @@ export class SessionManager {
             session.updatedAt = new Date();
             this.notifyChange();
         }
+    }
+
+    updateServerSessionId(serverSessionId: string | null): void {
+        const session = this.getCurrentSession();
+        if (session) {
+            session.serverSessionId = serverSessionId;
+            session.updatedAt = new Date();
+            this.notifyChange();
+        }
+    }
+
+    getCurrentServerSessionId(): string | null {
+        const session = this.getCurrentSession();
+        return session ? session.serverSessionId : null;
     }
 
     /**
@@ -171,7 +186,7 @@ export class SessionManager {
     }
 
     /**
-     * Get the Claude Code CLI session ID for the current session
+     * Get the OpenCode CLI session ID for the current session
      */
     getCurrentCliSessionId(): string | null {
         const session = this.getCurrentSession();

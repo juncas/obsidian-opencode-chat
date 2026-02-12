@@ -1,10 +1,13 @@
 import { Plugin, WorkspaceLeaf } from 'obsidian';
-import { ClaudeChatView } from './views/ClaudeChatView';
-import { CLAUDE_CHAT_VIEW_TYPE, ClaudePluginData, Session } from './types';
+import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
+import { join } from 'path';
+import { OpenCodeChatView } from './views/OpenCodeChatView';
+import { OPENCODE_CHAT_VIEW_TYPE, OpenCodePluginData, Session } from './types';
 import { SessionManager } from './services/SessionManager';
+import { OpenCodeServer } from './services/OpenCodeServer';
 
-export default class ClaudeChatPlugin extends Plugin {
-    data: ClaudePluginData = {
+export default class OpenCodeChatPlugin extends Plugin {
+    data: OpenCodePluginData = {
         sessionId: null, // Deprecated: kept for backward compatibility
         version: '1.0.0',
         sessions: [],
@@ -12,26 +15,40 @@ export default class ClaudeChatPlugin extends Plugin {
     };
 
     sessionManager: SessionManager = new SessionManager();
+    server: OpenCodeServer | null = null;
 
     async onload() {
         // Load persisted data
         await this.loadPluginData();
 
+        // Sync bundled OpenCode skills into vault-level .opencode/skills
+        // so the agent can discover them without manual copy.
+        this.syncBundledSkillsToVault();
+
+        // Start OpenCode HTTP server (non-blocking)
+        const vaultPath = this.getVaultPath();
+        this.server = OpenCodeServer.getInstance(vaultPath);
+        this.server.start().then(() => {
+            console.log('OpenCodeChat: Server started on port', this.server?.serverPort);
+        }).catch((e) => {
+            console.error('OpenCodeChat: Failed to start OpenCode server:', e);
+        });
+
         // Register the view type
         this.registerView(
-            CLAUDE_CHAT_VIEW_TYPE,
-            (leaf) => new ClaudeChatView(leaf, this)
+            OPENCODE_CHAT_VIEW_TYPE,
+            (leaf) => new OpenCodeChatView(leaf, this)
         );
 
         // Add ribbon icon to toggle the view
-        this.addRibbonIcon('message-square', 'Open Claude Chat', () => {
+        this.addRibbonIcon('message-square', 'Open OpenCode Chat', () => {
             this.activateView();
         });
 
         // Add command to open the chat
         this.addCommand({
             id: 'open-claude-chat',
-            name: 'Open Claude Chat',
+            name: 'Open OpenCode Chat',
             callback: () => this.activateView(),
         });
 
@@ -80,7 +97,7 @@ export default class ClaudeChatPlugin extends Plugin {
         const { workspace } = this.app;
 
         // Check if view already exists
-        const existingLeaf = workspace.getLeavesOfType(CLAUDE_CHAT_VIEW_TYPE)[0];
+        const existingLeaf = workspace.getLeavesOfType(OPENCODE_CHAT_VIEW_TYPE)[0];
 
         if (existingLeaf) {
             workspace.revealLeaf(existingLeaf);
@@ -89,7 +106,7 @@ export default class ClaudeChatPlugin extends Plugin {
             const leaf = workspace.getRightLeaf(false);
             if (leaf) {
                 await leaf.setViewState({
-                type: CLAUDE_CHAT_VIEW_TYPE,
+                type: OPENCODE_CHAT_VIEW_TYPE,
                 active: true,
             });
             }
@@ -97,7 +114,10 @@ export default class ClaudeChatPlugin extends Plugin {
     }
 
     onunload() {
-        // Cleanup is handled automatically by Obsidian
+        if (this.server) {
+            this.server.stop();
+            this.server = null;
+        }
     }
 
     /**
@@ -106,7 +126,7 @@ export default class ClaudeChatPlugin extends Plugin {
     async loadPluginData() {
         const savedData = await this.loadData();
         if (savedData) {
-            this.data = savedData as ClaudePluginData;
+            this.data = savedData as OpenCodePluginData;
 
             // Handle migration from old data format
             if (!this.data.sessions || this.data.sessions.length === 0) {
@@ -115,6 +135,7 @@ export default class ClaudeChatPlugin extends Plugin {
                     id: 'session-migrated',
                     name: 'Migrated Session',
                     sessionId: this.data.sessionId,
+                    serverSessionId: null,
                     createdAt: new Date(),
                     updatedAt: new Date(),
                     messages: [],
@@ -131,9 +152,9 @@ export default class ClaudeChatPlugin extends Plugin {
                 this.saveSessions();
             });
 
-            console.log('ClaudeChat: Loaded data, sessions:', this.data.sessions.length);
+            console.log('OpenCodeChat: Loaded data, sessions:', this.data.sessions.length);
         } else {
-            console.log('ClaudeChat: No saved data found, starting fresh');
+            console.log('OpenCodeChat: No saved data found, starting fresh');
 
             // Set up auto-save when sessions change
             this.sessionManager.onChange(() => {
@@ -153,14 +174,14 @@ export default class ClaudeChatPlugin extends Plugin {
     }
 
     /**
-     * Update the Claude Code CLI session ID (called from view)
+     * Update the OpenCode CLI session ID (called from view)
      */
     async updateSessionId(sessionId: string | null) {
         this.sessionManager.updateCliSessionId(sessionId);
     }
 
     /**
-     * Get the current Claude Code CLI session ID
+     * Get the current OpenCode CLI session ID
      */
     getSessionId(): string | null {
         return this.sessionManager.getCurrentCliSessionId();
@@ -171,7 +192,7 @@ export default class ClaudeChatPlugin extends Plugin {
      */
     clearChatHistory() {
         const { workspace } = this.app;
-        const existingLeaf = workspace.getLeavesOfType(CLAUDE_CHAT_VIEW_TYPE)[0];
+        const existingLeaf = workspace.getLeavesOfType(OPENCODE_CHAT_VIEW_TYPE)[0];
 
         if (existingLeaf) {
             const view = existingLeaf.view as any;
@@ -186,7 +207,7 @@ export default class ClaudeChatPlugin extends Plugin {
      */
     focusInput() {
         const { workspace } = this.app;
-        const existingLeaf = workspace.getLeavesOfType(CLAUDE_CHAT_VIEW_TYPE)[0];
+        const existingLeaf = workspace.getLeavesOfType(OPENCODE_CHAT_VIEW_TYPE)[0];
 
         if (existingLeaf) {
             const view = existingLeaf.view as any;
@@ -201,7 +222,7 @@ export default class ClaudeChatPlugin extends Plugin {
      */
     stopGeneration() {
         const { workspace } = this.app;
-        const existingLeaf = workspace.getLeavesOfType(CLAUDE_CHAT_VIEW_TYPE)[0];
+        const existingLeaf = workspace.getLeavesOfType(OPENCODE_CHAT_VIEW_TYPE)[0];
 
         if (existingLeaf) {
             const view = existingLeaf.view as any;
@@ -217,7 +238,7 @@ export default class ClaudeChatPlugin extends Plugin {
     startNewSession() {
         const session = this.sessionManager.createSession(`Session ${this.sessionManager.getSessions().length + 1}`);
         const { workspace } = this.app;
-        const existingLeaf = workspace.getLeavesOfType(CLAUDE_CHAT_VIEW_TYPE)[0];
+        const existingLeaf = workspace.getLeavesOfType(OPENCODE_CHAT_VIEW_TYPE)[0];
 
         if (existingLeaf) {
             const view = existingLeaf.view as any;
@@ -232,12 +253,67 @@ export default class ClaudeChatPlugin extends Plugin {
      */
     async exportConversation() {
         const { workspace } = this.app;
-        const existingLeaf = workspace.getLeavesOfType(CLAUDE_CHAT_VIEW_TYPE)[0];
+        const existingLeaf = workspace.getLeavesOfType(OPENCODE_CHAT_VIEW_TYPE)[0];
 
         if (existingLeaf) {
             const view = existingLeaf.view as any;
             if (view.exportConversation) {
                 await view.exportConversation();
+            }
+        }
+    }
+
+    private getVaultPath(): string {
+        return (this.app.vault.adapter as any).basePath || '';
+    }
+
+    private syncBundledSkillsToVault(): void {
+        const vaultPath = this.getVaultPath();
+        if (!vaultPath) {
+            return;
+        }
+
+        const pluginRoot = join(vaultPath, '.obsidian', 'plugins', this.manifest.id);
+        const sourceRoot = join(pluginRoot, 'opencode-skills');
+        if (!existsSync(sourceRoot)) {
+            return;
+        }
+
+        const targetRoot = join(vaultPath, '.opencode', 'skills');
+        mkdirSync(targetRoot, { recursive: true });
+
+        const entries = readdirSync(sourceRoot, { withFileTypes: true });
+        for (const entry of entries) {
+            if (!entry.isDirectory()) {
+                continue;
+            }
+
+            const skillSourceDir = join(sourceRoot, entry.name);
+            const skillMarker = join(skillSourceDir, 'SKILL.md');
+            if (!existsSync(skillMarker)) {
+                continue;
+            }
+
+            const skillTargetDir = join(targetRoot, entry.name);
+            this.copyDirectoryRecursive(skillSourceDir, skillTargetDir);
+        }
+    }
+
+    private copyDirectoryRecursive(sourceDir: string, targetDir: string): void {
+        mkdirSync(targetDir, { recursive: true });
+        const entries = readdirSync(sourceDir, { withFileTypes: true });
+
+        for (const entry of entries) {
+            const sourcePath = join(sourceDir, entry.name);
+            const targetPath = join(targetDir, entry.name);
+
+            if (entry.isDirectory()) {
+                this.copyDirectoryRecursive(sourcePath, targetPath);
+                continue;
+            }
+
+            if (entry.isFile()) {
+                copyFileSync(sourcePath, targetPath);
             }
         }
     }

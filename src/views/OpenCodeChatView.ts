@@ -1,0 +1,573 @@
+import { ItemView, WorkspaceLeaf } from 'obsidian';
+import OpenCodeChatPlugin from '../main';
+import { OpenCodeServer } from '../services/OpenCodeServer';
+import { SessionManager } from '../services/SessionManager';
+import { ChatInput } from '../ui/ChatInput';
+import { MessageContainer } from '../ui/MessageContainer';
+import { SessionTabs } from '../ui/SessionTabs';
+import { OPENCODE_CHAT_VIEW_TYPE } from '../types';
+import type {
+    PermissionRequest,
+    PermissionRule,
+    QuestionRequest,
+    SessionStatus,
+    StepFinishPart,
+    StepStartPart,
+    FileDiff,
+    ToolPart,
+} from '../types/opencode';
+
+const ASK_PERMISSIONS: PermissionRule[] = [
+    { permission: 'bash', pattern: '*', action: 'ask' },
+    { permission: 'write', pattern: '*', action: 'ask' },
+    { permission: 'edit', pattern: '*', action: 'ask' },
+];
+
+export class OpenCodeChatView extends ItemView {
+    plugin: OpenCodeChatPlugin;
+    sessionManager: SessionManager;
+    messageContainer: MessageContainer;
+    chatInput: ChatInput;
+    sessionTabs: SessionTabs;
+    isProcessing: boolean = false;
+    private statusBadgeEl: HTMLElement | null = null;
+
+    private boundHandlers: {
+        onTextDelta: (sessionID: string, partID: string, delta: string, fullText: string) => void;
+        onSessionIdle: (sessionID: string) => void;
+        onSessionStatus: (sessionID: string, status: SessionStatus) => void;
+        onSessionError: (sessionID: string | undefined, error: { message: string; code?: string } | undefined) => void;
+        onToolUpdated: (sessionID: string, part: ToolPart) => void;
+        onDiffUpdated: (sessionID: string, diffs: FileDiff[]) => void;
+        onPermissionAsked: (request: PermissionRequest) => void;
+        onQuestionAsked: (request: QuestionRequest) => void;
+        onStepStart: (sessionID: string, part: StepStartPart) => void;
+        onStepFinish: (sessionID: string, part: StepFinishPart) => void;
+        onConnected: () => void;
+        onDisconnected: () => void;
+        onError: (error: Error) => void;
+    };
+
+    constructor(leaf: WorkspaceLeaf, plugin: OpenCodeChatPlugin) {
+        super(leaf);
+        this.plugin = plugin;
+        this.sessionManager = plugin.sessionManager;
+
+        this.boundHandlers = {
+            onTextDelta: this.handleTextDelta.bind(this),
+            onSessionIdle: this.handleSessionIdle.bind(this),
+            onSessionStatus: this.handleSessionStatus.bind(this),
+            onSessionError: this.handleSessionError.bind(this),
+            onToolUpdated: this.handleToolUpdated.bind(this),
+            onDiffUpdated: this.handleDiffUpdated.bind(this),
+            onPermissionAsked: this.handlePermissionAsked.bind(this),
+            onQuestionAsked: this.handleQuestionAsked.bind(this),
+            onStepStart: this.handleStepStart.bind(this),
+            onStepFinish: this.handleStepFinish.bind(this),
+            onConnected: this.handleConnected.bind(this),
+            onDisconnected: this.handleDisconnected.bind(this),
+            onError: this.handleError.bind(this),
+        };
+    }
+
+    getViewType(): string {
+        return OPENCODE_CHAT_VIEW_TYPE;
+    }
+
+    getDisplayText(): string {
+        return 'OpenCode Chat';
+    }
+
+    getIcon(): string {
+        return 'message-square';
+    }
+
+    private get server(): OpenCodeServer | null {
+        return this.plugin.server;
+    }
+
+    private get currentServerSessionId(): string | null {
+        return this.sessionManager.getCurrentServerSessionId();
+    }
+
+    private isCurrentSession(sessionID: string): boolean {
+        return this.currentServerSessionId === sessionID;
+    }
+
+    async onOpen() {
+        const container = this.containerEl.children[1] as HTMLElement;
+        container.empty();
+        container.addClass('claude-chat-container');
+
+        const mainLayout = container.createEl('div', {
+            cls: 'claude-chat-main-layout',
+        });
+
+        const contentEl = mainLayout.createEl('div', {
+            cls: 'claude-chat-content',
+        });
+
+        const tabsContainer = contentEl.createEl('div', {
+            cls: 'claude-session-tabs-wrapper',
+        });
+
+        this.sessionTabs = new SessionTabs(tabsContainer, {
+            onSessionSelect: (sessionId) => this.loadSession(sessionId),
+            onNewSession: () => this.createNewSession(),
+            onSessionDelete: (sessionId) => this.deleteSession(sessionId),
+            onSessionRename: (sessionId, newName) => this.renameSession(sessionId, newName),
+        });
+
+        this.updateSessionList();
+
+        this.statusBadgeEl = contentEl.createEl('div', {
+            cls: 'claude-server-status claude-server-status-connecting',
+        });
+        this.statusBadgeEl.setText('Connecting...');
+
+        this.messageContainer = new MessageContainer(contentEl, this.app);
+
+        this.messageContainer.setOnEditMessage(async (index: number, content: string) => {
+            await this.handleEditMessage(index, content);
+        });
+
+        this.loadCurrentSessionMessages();
+
+        const inputActionsEl = contentEl.createEl('div', {
+            cls: 'claude-chat-input-actions',
+        });
+
+        this.createActionButton(inputActionsEl, 'Export', 'Export conversation to Markdown (Ctrl+Shift+E)', () => this.exportConversation());
+        this.createActionButton(inputActionsEl, 'Clear', 'Clear chat history (Ctrl+K)', () => this.clearHistory());
+        this.createActionButton(inputActionsEl, 'Regenerate', 'Regenerate last response', () => this.regenerateLast());
+
+        this.chatInput = new ChatInput(
+            contentEl,
+            this.app,
+            async (command: string) => {
+                await this.handleCommand(command);
+            },
+            () => {
+                this.handleStop();
+            }
+        );
+
+        this.subscribeToServer();
+
+        if (this.server?.connected) {
+            this.updateStatusBadge(true);
+        }
+    }
+
+    private createActionButton(container: HTMLElement, label: string, tooltip: string, onClick: () => void) {
+        const button = container.createEl('button', {
+            cls: 'claude-chat-action-button',
+        });
+        button.textContent = label;
+        button.setAttribute('aria-label', tooltip);
+        button.setAttribute('title', tooltip);
+        button.addEventListener('click', onClick);
+    }
+
+    private subscribeToServer(): void {
+        const server = this.server;
+        if (!server) return;
+
+        server.on('text.delta', this.boundHandlers.onTextDelta);
+        server.on('session.idle', this.boundHandlers.onSessionIdle);
+        server.on('session.status', this.boundHandlers.onSessionStatus);
+        server.on('session.error', this.boundHandlers.onSessionError);
+        server.on('tool.updated', this.boundHandlers.onToolUpdated);
+        server.on('diff.updated', this.boundHandlers.onDiffUpdated);
+        server.on('permission.asked', this.boundHandlers.onPermissionAsked);
+        server.on('question.asked', this.boundHandlers.onQuestionAsked);
+        server.on('step.start', this.boundHandlers.onStepStart);
+        server.on('step.finish', this.boundHandlers.onStepFinish);
+        server.on('connected', this.boundHandlers.onConnected);
+        server.on('disconnected', this.boundHandlers.onDisconnected);
+        server.on('error', this.boundHandlers.onError);
+    }
+
+    private unsubscribeFromServer(): void {
+        const server = this.server;
+        if (!server) return;
+
+        server.off('text.delta', this.boundHandlers.onTextDelta);
+        server.off('session.idle', this.boundHandlers.onSessionIdle);
+        server.off('session.status', this.boundHandlers.onSessionStatus);
+        server.off('session.error', this.boundHandlers.onSessionError);
+        server.off('tool.updated', this.boundHandlers.onToolUpdated);
+        server.off('diff.updated', this.boundHandlers.onDiffUpdated);
+        server.off('permission.asked', this.boundHandlers.onPermissionAsked);
+        server.off('question.asked', this.boundHandlers.onQuestionAsked);
+        server.off('step.start', this.boundHandlers.onStepStart);
+        server.off('step.finish', this.boundHandlers.onStepFinish);
+        server.off('connected', this.boundHandlers.onConnected);
+        server.off('disconnected', this.boundHandlers.onDisconnected);
+        server.off('error', this.boundHandlers.onError);
+    }
+
+    private handleTextDelta(sessionID: string, _partID: string, delta: string, _fullText: string): void {
+        if (!this.isCurrentSession(sessionID)) return;
+        this.messageContainer.appendToAssistantMessage(delta);
+    }
+
+    private handleSessionIdle(sessionID: string): void {
+        if (!this.isCurrentSession(sessionID)) return;
+
+        this.messageContainer.finalizeAssistantMessage();
+
+        const messages = this.messageContainer.getMessages();
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.role === 'assistant') {
+            this.sessionManager.addMessage(lastMessage);
+        }
+
+        this.updateSessionList();
+        this.isProcessing = false;
+        this.chatInput.setProcessing(false);
+        this.chatInput.focus();
+    }
+
+    private handleSessionStatus(sessionID: string, status: SessionStatus): void {
+        if (!this.isCurrentSession(sessionID)) return;
+
+        if (status.type === 'busy') {
+            this.isProcessing = true;
+            this.chatInput.setProcessing(true);
+        }
+    }
+
+    private handleSessionError(sessionID: string | undefined, error: { message: string; code?: string } | undefined): void {
+        if (sessionID && !this.isCurrentSession(sessionID)) return;
+
+        const errorMsg = error?.message || 'Unknown error';
+        console.error('OpenCodeChatView: Session error:', errorMsg);
+
+        this.messageContainer.hideThinking();
+        this.messageContainer.appendToAssistantMessage(`\n\n**Error:** ${errorMsg}`);
+        this.messageContainer.finalizeAssistantMessage();
+
+        const messages = this.messageContainer.getMessages();
+        const lastMessage = messages[messages.length - 1];
+        if (lastMessage && lastMessage.role === 'assistant') {
+            this.sessionManager.addMessage(lastMessage);
+        }
+
+        this.isProcessing = false;
+        this.chatInput.setProcessing(false);
+    }
+
+    private handleToolUpdated(sessionID: string, part: ToolPart): void {
+        if (!this.isCurrentSession(sessionID)) return;
+        this.messageContainer.addToolCall(part);
+    }
+
+    private handleDiffUpdated(sessionID: string, diffs: FileDiff[]): void {
+        if (!this.isCurrentSession(sessionID)) return;
+        this.messageContainer.addFileDiffs(sessionID, diffs);
+    }
+
+    private handlePermissionAsked(request: PermissionRequest): void {
+        if (!this.isCurrentSession(request.sessionID)) return;
+
+        const server = this.server;
+        if (!server) return;
+
+        this.messageContainer.addPermissionDialog(request, (response) => {
+            server.approvePermission(request.sessionID, request.id, response).catch((err) => {
+                console.error('OpenCodeChatView: Failed to reply to permission:', err);
+            });
+        });
+    }
+
+    private handleQuestionAsked(request: QuestionRequest): void {
+        if (!this.isCurrentSession(request.sessionID)) return;
+
+        const server = this.server;
+        if (!server) return;
+
+        this.messageContainer.addQuestionDialog(
+            request,
+            (answers) => {
+                server.replyToQuestion(request.sessionID, request.id, answers).catch((err) => {
+                    console.error('OpenCodeChatView: Failed to reply to question:', err);
+                });
+            },
+            () => {
+                server.rejectQuestion(request.id).catch((err) => {
+                    console.error('OpenCodeChatView: Failed to reject question:', err);
+                });
+            }
+        );
+    }
+
+    private handleStepStart(sessionID: string, part: StepStartPart): void {
+        if (!this.isCurrentSession(sessionID)) return;
+        this.messageContainer.addStepIndicator(part);
+    }
+
+    private handleStepFinish(sessionID: string, part: StepFinishPart): void {
+        if (!this.isCurrentSession(sessionID)) return;
+        this.messageContainer.addStepIndicator(part);
+    }
+
+    private handleConnected(): void {
+        this.updateStatusBadge(true);
+    }
+
+    private handleDisconnected(): void {
+        this.updateStatusBadge(false);
+    }
+
+    private handleError(error: Error): void {
+        console.error('OpenCodeChatView: Server error:', error);
+    }
+
+    private updateStatusBadge(connected: boolean): void {
+        if (!this.statusBadgeEl) return;
+
+        this.statusBadgeEl.classList.remove(
+            'claude-server-status-connected',
+            'claude-server-status-disconnected',
+            'claude-server-status-connecting'
+        );
+
+        if (connected) {
+            this.statusBadgeEl.classList.add('claude-server-status-connected');
+            this.statusBadgeEl.setText('Connected');
+        } else {
+            this.statusBadgeEl.classList.add('claude-server-status-disconnected');
+            this.statusBadgeEl.setText('Disconnected');
+        }
+    }
+
+    private loadCurrentSessionMessages() {
+        const messages = this.sessionManager.getCurrentMessages();
+
+        if (messages.length === 0) {
+            const welcomeContent = `OpenCode Chat - Enter commands to interact with OpenCode
+
+**Keyboard Shortcuts:**
+• \`Ctrl+Shift+N\` - New session
+• \`Ctrl+Shift+E\` - Export conversation
+• \`Ctrl+K\` - Clear history
+• \`Ctrl+L\` - Focus input
+• \`↑/↓\` - Browse command history
+• \`Shift+Enter\` - New line
+• \`Escape\` - Stop generation
+
+**Tips:**
+• Click on user messages to edit and resend
+• Hover over messages to copy content
+• Type \`@\` in input to reference vault files
+• Use the toolbar buttons for quick actions
+• Tool calls and permissions will appear inline`;
+
+            this.messageContainer.addMessage({
+                role: 'system',
+                content: welcomeContent,
+                timestamp: new Date(),
+            });
+        } else {
+            for (const message of messages) {
+                this.messageContainer.addMessage(message);
+            }
+        }
+    }
+
+    private updateSessionList() {
+        this.sessionTabs.updateSessions(
+            this.sessionManager.getSessions(),
+            this.sessionManager.getCurrentSession()?.id || null
+        );
+    }
+
+    async handleCommand(command: string) {
+        if (this.isProcessing) return;
+        if (!this.server) {
+            console.error('OpenCodeChatView: Server not available');
+            return;
+        }
+
+        this.isProcessing = true;
+        this.chatInput.setProcessing(true);
+
+        this.messageContainer.addUserMessage(command);
+
+        this.sessionManager.addMessage({
+            role: 'user',
+            content: command,
+            timestamp: new Date(),
+        });
+
+        this.messageContainer.createAssistantMessage();
+
+        try {
+            let serverSessionId = this.currentServerSessionId;
+
+            if (!serverSessionId) {
+                const session = await this.server.createSession(ASK_PERMISSIONS);
+                serverSessionId = session.id;
+                this.sessionManager.updateServerSessionId(serverSessionId);
+            }
+
+            await this.server.sendMessage(serverSessionId, command);
+        } catch (error: any) {
+            console.error('OpenCodeChatView: Command error:', error);
+            this.messageContainer.hideThinking();
+            this.messageContainer.appendToAssistantMessage(`\n\n**Error:** ${error.message}`);
+            this.messageContainer.finalizeAssistantMessage();
+
+            const messages = this.messageContainer.getMessages();
+            const lastMessage = messages[messages.length - 1];
+            if (lastMessage && lastMessage.role === 'assistant') {
+                this.sessionManager.addMessage(lastMessage);
+            }
+
+            this.isProcessing = false;
+            this.chatInput.setProcessing(false);
+            this.chatInput.focus();
+        }
+    }
+
+    handleStop() {
+        if (!this.isProcessing) return;
+
+        const serverSessionId = this.currentServerSessionId;
+        if (serverSessionId && this.server) {
+            this.server.abortSession(serverSessionId).catch((err) => {
+                console.error('OpenCodeChatView: Failed to abort session:', err);
+            });
+        }
+
+        this.messageContainer.hideThinking();
+        this.messageContainer.appendToAssistantMessage('\n\n_Stopped by user_');
+        this.messageContainer.finalizeAssistantMessage();
+
+        this.isProcessing = false;
+        this.chatInput.setProcessing(false);
+    }
+
+    clearHistory() {
+        this.sessionManager.clearCurrentSession();
+        this.messageContainer.clear();
+
+        this.messageContainer.addMessage({
+            role: 'system',
+            content: 'OpenCode Chat - History cleared',
+            timestamp: new Date(),
+        });
+
+        this.updateSessionList();
+    }
+
+    focusInput() {
+        this.chatInput.focus();
+    }
+
+    loadSession(sessionId: string) {
+        const switched = this.sessionManager.switchSession(sessionId);
+        if (!switched) {
+            console.error('OpenCodeChatView: Failed to switch to session:', sessionId);
+            return;
+        }
+
+        this.messageContainer.clear();
+        this.loadCurrentSessionMessages();
+        this.updateSessionList();
+        this.chatInput.focus();
+    }
+
+    createNewSession() {
+        const session = this.sessionManager.createSession(`Session ${this.sessionManager.getSessions().length}`);
+        this.loadSession(session.id);
+    }
+
+    deleteSession(sessionId: string) {
+        const deleted = this.sessionManager.deleteSession(sessionId);
+        if (!deleted) {
+            console.error('OpenCodeChatView: Failed to delete session:', sessionId);
+            return;
+        }
+
+        const currentSession = this.sessionManager.getCurrentSession();
+        if (currentSession) {
+            this.loadSession(currentSession.id);
+        } else {
+            this.createNewSession();
+        }
+    }
+
+    renameSession(sessionId: string, newName: string) {
+        const renamed = this.sessionManager.updateSessionName(sessionId, newName);
+        if (renamed) {
+            this.updateSessionList();
+        }
+    }
+
+    async exportConversation() {
+        const messages = this.sessionManager.getCurrentMessages();
+
+        if (messages.length === 0) return;
+
+        const currentSession = this.sessionManager.getCurrentSession();
+        const sessionName = currentSession?.name || 'Conversation';
+
+        const timestamp = new Date().toISOString().replace(/[:.]/g, '-').slice(0, -5);
+        const safeName = sessionName.replace(/[^a-zA-Z0-9]/g, '-');
+        const filename = `opencode-chat-${safeName}-${timestamp}.md`;
+
+        let content = `# OpenCode Chat Conversation\n\n`;
+        content += `**Session:** ${sessionName}\n\n`;
+        content += `*Exported: ${new Date().toLocaleString()}*\n\n`;
+        content += `*Server Session ID: ${currentSession?.serverSessionId || 'N/A'}*\n\n`;
+        content += `---\n\n`;
+
+        for (const message of messages) {
+            if (message.role === 'system') continue;
+
+            const roleLabel = message.role === 'user' ? '👤 User' : '🤖 Assistant';
+            const timeLabel = message.timestamp.toLocaleTimeString();
+
+            content += `## ${roleLabel}\n\n`;
+            content += `*${timeLabel}*\n\n`;
+            content += `${message.content}\n\n`;
+            content += `---\n\n`;
+        }
+
+        const vault = this.app.vault;
+        await vault.create(filename, content);
+
+        const file = vault.getAbstractFileByPath(filename);
+        if (file) {
+            await this.app.workspace.openLinkText(filename, '', true);
+        }
+    }
+
+    async handleEditMessage(index: number, content: string) {
+        this.messageContainer.removeMessagesAfter(index);
+        await this.handleCommand(content);
+    }
+
+    async regenerateLast() {
+        const messages = this.messageContainer.getMessages();
+
+        let lastUserIndex = -1;
+        for (let i = messages.length - 1; i >= 0; i--) {
+            if (messages[i].role === 'user') {
+                lastUserIndex = i;
+                break;
+            }
+        }
+
+        if (lastUserIndex >= 0) {
+            this.messageContainer.removeMessagesAfter(lastUserIndex - 1);
+            await this.handleCommand(messages[lastUserIndex].content);
+        }
+    }
+
+    async onClose() {
+        this.unsubscribeFromServer();
+    }
+}
