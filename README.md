@@ -73,7 +73,7 @@ export PATH="$HOME/.opencode/bin:$PATH"
 
 ### Method A: Install from Release
 
-1. Download latest package from [Releases](https://github.com/juncas/obsidian-claude-chat/releases).
+1. Download latest package from [Releases](https://github.com/juncas/obsidian-opencode-chat/releases).
 2. Extract into `<vault>/.obsidian/plugins/claude-chat-obsidian/`.
 3. Ensure files exist:
    - `manifest.json`
@@ -85,8 +85,8 @@ export PATH="$HOME/.opencode/bin:$PATH"
 ### Method B: Build from Source (Recommended for Development/Agents)
 
 ```bash
-git clone https://github.com/juncas/obsidian-claude-chat.git
-cd obsidian-claude-chat
+git clone https://github.com/juncas/obsidian-opencode-chat.git
+cd obsidian-opencode-chat
 npm ci
 npm run build
 ```

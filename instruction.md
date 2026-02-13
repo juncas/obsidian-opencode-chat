@@ -41,7 +41,7 @@ Run from any shell (macOS/Linux):
 ```bash
 set -euo pipefail
 
-REPO_PATH="/absolute/path/to/obsidian-claude-chat"
+REPO_PATH="/absolute/path/to/obsidian-opencode-chat"
 VAULT_PATH="/absolute/path/to/your/vault"
 PLUGIN_ID="claude-chat-obsidian"
 PLUGIN_DIR="$VAULT_PATH/.obsidian/plugins/$PLUGIN_ID"

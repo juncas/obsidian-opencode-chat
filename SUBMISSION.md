@@ -88,7 +88,7 @@ Add the following JSON entry at the **end** of the `community-plugins.json` arra
   "name": "Claude Chat",
   "author": "juncas",
   "description": "A native chat interface for Claude Code CLI in Obsidian. Supports multi-session conversations, streaming responses, message editing, and markdown export.",
-  "repo": "juncas/obsidian-claude-chat"
+  "repo": "juncas/obsidian-opencode-chat"
 }
 ```
 
@@ -114,7 +114,7 @@ When creating the Pull Request, the official PR template will be shown. Here is 
 
 ## Repo URL
 
-Link to my plugin: https://github.com/juncas/obsidian-claude-chat
+Link to my plugin: https://github.com/juncas/obsidian-opencode-chat
 
 ## Release Checklist
 - [ ] I have tested the plugin on
