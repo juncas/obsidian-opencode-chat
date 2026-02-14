@@ -2465,6 +2465,34 @@ body.theme-light .claude-chat-input {
     text-overflow: ellipsis;
 }
 
+.claude-writing-version-actions {
+    display: flex;
+    gap: 4px;
+    align-items: center;
+    flex-shrink: 0;
+}
+
+.claude-writing-version-compare {
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    border-radius: 6px;
+    font-size: var(--font-ui-smallest);
+    padding: 4px 8px;
+    cursor: pointer;
+    transition: all var(--claude-transition-fast) ease;
+}
+
+.claude-writing-version-compare:hover:not(:disabled) {
+    border-color: var(--claude-neural-border);
+    color: var(--claude-neural-glow);
+}
+
+.claude-writing-version-compare:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
 .claude-writing-version-rollback {
     border: 1px solid var(--background-modifier-border);
     background: var(--background-secondary);
