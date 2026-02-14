@@ -43,7 +43,7 @@ export class ChatInput {
         this.inputEl = this.inputWrapperEl.createEl('textarea', {
             cls: 'claude-chat-input',
             attr: {
-                placeholder: 'Enter a command for OpenCode... (type @ to reference files)',
+                placeholder: 'Ask OpenCode, or use /write /kb /qa workflows... (type @ to reference files)',
                 rows: '1',
             },
         });
