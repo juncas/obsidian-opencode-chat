@@ -1,5 +1,5 @@
 import type { CitationCoverageReport } from '../services/CitationQualityService';
-import type { DraftVersion, WritingStage, WritingTask } from '../types/writing';
+import type { DraftVersion, StageTransition, WritingStage, WritingTask } from '../types/writing';
 
 const STAGE_ORDER: WritingStage[] = [
     'discover',
@@ -28,6 +28,7 @@ export class WritingTaskPanel {
     private objectiveEl: HTMLElement;
     private metadataEl: HTMLElement;
     private stagesEl: HTMLElement;
+    private stageHistoryEl: HTMLElement;
     private versionsEl: HTMLElement;
     private metricsEl: HTMLElement;
     private emptyEl: HTMLElement;
@@ -41,6 +42,7 @@ export class WritingTaskPanel {
             onResumeTask: () => void;
             onCompleteTask: () => void;
             onRollbackDraftVersion: (versionId: string) => void;
+            onUpdateTaskProperty?: (key: string, value: string) => void;
         }
     ) {
         this.panelEl = parentEl.createEl('div', {
@@ -72,6 +74,10 @@ export class WritingTaskPanel {
 
         this.stagesEl = this.bodyEl.createEl('div', {
             cls: 'claude-writing-task-stages',
+        });
+
+        this.stageHistoryEl = this.bodyEl.createEl('div', {
+            cls: 'claude-writing-task-stage-history',
         });
 
         this.metricsEl = this.bodyEl.createEl('div', {
@@ -134,11 +140,12 @@ export class WritingTaskPanel {
         });
 
         this.metadataEl.empty();
-        this.addMetadataPill(`Audience: ${task.audience}`);
-        this.addMetadataPill(`Tone: ${task.tone}`);
-        this.addMetadataPill(`Length: ${task.targetLength}`);
+        this.renderInlineEditField(this.metadataEl, 'Audience', 'audience', task.audience);
+        this.renderInlineEditField(this.metadataEl, 'Tone', 'tone', task.tone);
+        this.renderInlineEditField(this.metadataEl, 'Length', 'targetLength', task.targetLength);
 
         this.renderStageButtons(task.stage);
+        this.renderStageHistory(task.stageHistory || []);
         this.renderDraftVersions(task);
         this.renderMetrics(report);
     }
@@ -147,11 +154,99 @@ export class WritingTaskPanel {
         this.panelEl.remove();
     }
 
-    private addMetadataPill(text: string): void {
-        this.metadataEl.createEl('span', {
-            cls: 'claude-writing-task-pill',
-            text,
+    private renderInlineEditField(container: HTMLElement, label: string, key: string, value: string): void {
+        const wrapper = container.createEl('div', { cls: 'claude-writing-inline-edit' });
+        wrapper.createEl('span', {
+            cls: 'claude-writing-inline-edit-label',
+            text: `${label}: `,
         });
+        const valueEl = wrapper.createEl('span', {
+            cls: 'claude-writing-inline-edit-value',
+            text: value,
+        });
+        valueEl.setAttribute('tabindex', '0');
+        valueEl.setAttribute('role', 'button');
+        valueEl.setAttribute('aria-label', `Edit ${label}`);
+
+        const startEdit = () => {
+            const input = wrapper.createEl('input', {
+                cls: 'claude-writing-inline-edit-input',
+                type: 'text',
+                value: value,
+            });
+            valueEl.style.display = 'none';
+            input.focus();
+            input.select();
+
+            const commit = () => {
+                const newValue = input.value.trim();
+                if (newValue && newValue !== value) {
+                    this.callbacks.onUpdateTaskProperty?.(key, newValue);
+                }
+                input.remove();
+                valueEl.style.display = '';
+            };
+
+            input.addEventListener('blur', commit);
+            input.addEventListener('keydown', (e) => {
+                if (e.key === 'Enter') {
+                    e.preventDefault();
+                    input.blur();
+                } else if (e.key === 'Escape') {
+                    input.removeEventListener('blur', commit);
+                    input.remove();
+                    valueEl.style.display = '';
+                }
+            });
+        };
+
+        valueEl.addEventListener('click', startEdit);
+        valueEl.addEventListener('keydown', (e) => {
+            if (e.key === 'Enter' || e.key === ' ') {
+                e.preventDefault();
+                startEdit();
+            }
+        });
+    }
+
+    private renderStageHistory(history: StageTransition[]): void {
+        this.stageHistoryEl.empty();
+
+        if (history.length === 0) {
+            return;
+        }
+
+        this.stageHistoryEl.createEl('div', {
+            cls: 'claude-writing-task-label',
+            text: 'Stage History',
+        });
+
+        const listEl = this.stageHistoryEl.createEl('div', {
+            cls: 'claude-writing-stage-history-list',
+        });
+
+        const recent = history.slice(-5).reverse();
+        for (const transition of recent) {
+            const itemEl = listEl.createEl('div', {
+                cls: 'claude-writing-stage-history-item',
+            });
+            itemEl.createEl('span', {
+                cls: 'claude-writing-stage-history-from',
+                text: STAGE_LABELS[transition.from],
+            });
+            itemEl.createEl('span', {
+                cls: 'claude-writing-stage-history-arrow',
+                text: '\u2192',
+            });
+            itemEl.createEl('span', {
+                cls: 'claude-writing-stage-history-to',
+                text: STAGE_LABELS[transition.to],
+            });
+            itemEl.createEl('span', {
+                cls: 'claude-writing-stage-history-time',
+                text: this.formatTime(transition.timestamp),
+            });
+        }
     }
 
     private renderStageButtons(activeStage: WritingStage): void {
@@ -210,13 +305,32 @@ export class WritingTaskPanel {
             return;
         }
 
-        const coverageText = `${Math.round(report.coverage * 100)}% (${report.citedClaims}/${report.totalClaims})`;
+        const pct = Math.round(report.coverage * 100);
+        const coverageText = `${pct}% (${report.citedClaims}/${report.totalClaims})`;
         this.metricsEl.createEl('div', {
             cls: 'claude-writing-task-value',
-            text: `${coverageText} · Sources: ${report.sourceCount}`,
+            text: `${coverageText} \u00B7 Sources: ${report.sourceCount}`,
         });
 
+        const barContainer = this.metricsEl.createEl('div', {
+            cls: 'claude-writing-metrics-bar-container',
+        });
+        const bar = barContainer.createEl('div', {
+            cls: 'claude-writing-metrics-bar',
+        });
+        const severityCls = pct >= 80 ? 'claude-writing-metrics-severity-low'
+            : pct >= 50 ? 'claude-writing-metrics-severity-medium'
+            : 'claude-writing-metrics-severity-high';
+        bar.addClass(severityCls);
+        bar.style.width = `${pct}%`;
+
         if (report.uncitedClaims.length > 0) {
+            const uncitedLabel = this.metricsEl.createEl('div', {
+                cls: 'claude-writing-task-label claude-writing-metrics-uncited-label',
+                text: `Uncited Claims (${report.uncitedClaims.length})`,
+            });
+            uncitedLabel.addClass(severityCls);
+
             const list = this.metricsEl.createEl('ul', {
                 cls: 'claude-writing-task-uncited-list',
             });

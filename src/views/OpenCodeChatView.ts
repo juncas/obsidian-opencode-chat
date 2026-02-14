@@ -165,6 +165,14 @@ export class OpenCodeChatView extends ItemView {
             onResumeTask: () => this.updateCurrentWritingTaskStatus('active'),
             onCompleteTask: () => this.updateCurrentWritingTaskStatus('completed'),
             onRollbackDraftVersion: (versionId) => this.rollbackToDraftVersion(versionId),
+            onUpdateTaskProperty: (key, value) => {
+                const task = this.sessionManager.getCurrentWritingTask();
+                if (task && (key === 'audience' || key === 'tone' || key === 'targetLength')) {
+                    task[key] = value;
+                    this.sessionManager.setCurrentWritingTask(task);
+                    this.refreshWritingTaskPanel();
+                }
+            },
         });
 
         this.syncWorkflowTaskFromSession();
@@ -282,10 +290,19 @@ export class OpenCodeChatView extends ItemView {
         if (lastMessage && lastMessage.role === 'assistant') {
             this.sessionManager.addMessage(lastMessage);
 
+            let report: CitationCoverageReport | null = null;
             if (pendingMeta?.requiresCitationCheck) {
-                const report = this.citationQualityService.evaluate(lastMessage.content);
+                report = this.citationQualityService.evaluate(lastMessage.content);
                 this.citationReportBySessionId.set(sessionID, report);
                 this.addSystemNotice(this.buildCitationCoverageNotice(report));
+            }
+
+            if (pendingMeta?.shouldCaptureDraftVersion && pendingMeta.stage) {
+                this.captureDraftVersionFromAssistant(
+                    pendingMeta.stage,
+                    lastMessage.content,
+                    report
+                );
             }
         }
 
@@ -735,6 +752,8 @@ export class OpenCodeChatView extends ItemView {
             contextBlock
         );
 
+        const shouldCapture = stage === 'draft' || stage === 'polish' || stage === 'publish';
+
         return {
             displayCommand: command,
             promptToSend,
@@ -743,6 +762,7 @@ export class OpenCodeChatView extends ItemView {
                 source: 'write',
                 stage,
                 requiresCitationCheck: true,
+                shouldCaptureDraftVersion: shouldCapture,
             },
         };
     }
