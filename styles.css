@@ -2236,3 +2236,257 @@ body.theme-light .claude-chat-input {
     background: var(--claude-neural-base);
     animation: claude-neural-pulse 1.4s ease-in-out infinite;
 }
+
+/* ===================================================================
+   WRITING TASK PANEL
+   =================================================================== */
+
+.claude-writing-task-panel {
+    margin: 10px 16px 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-left: 3px solid var(--claude-neural-base);
+    border-radius: 10px;
+    background: var(--background-secondary);
+    overflow: hidden;
+}
+
+.claude-writing-task-header {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 12px;
+    background: color-mix(in srgb, var(--claude-neural-subtle) 70%, var(--background-secondary));
+    border-bottom: 1px solid var(--background-modifier-border);
+}
+
+.claude-writing-task-title {
+    font-size: var(--font-ui-small);
+    font-weight: 600;
+    color: var(--text-normal);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.claude-writing-task-status {
+    font-size: var(--font-ui-smallest);
+    font-weight: 600;
+    color: var(--claude-neural-glow);
+    border: 1px solid var(--claude-neural-border);
+    border-radius: 999px;
+    padding: 2px 8px;
+    background: var(--background-primary);
+    text-transform: capitalize;
+}
+
+.claude-writing-task-status.is-paused {
+    color: #f59e0b;
+    border-color: rgba(245, 158, 11, 0.45);
+}
+
+.claude-writing-task-status.is-completed {
+    color: #22c55e;
+    border-color: rgba(34, 197, 94, 0.45);
+}
+
+.claude-writing-task-body {
+    padding: 10px 12px 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.claude-writing-task-label {
+    font-size: var(--font-ui-smallest);
+    color: var(--text-muted);
+    text-transform: uppercase;
+    letter-spacing: 0.04em;
+    font-weight: 600;
+}
+
+.claude-writing-task-value {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-normal);
+    line-height: 1.45;
+}
+
+.claude-writing-task-metadata {
+    display: flex;
+    flex-wrap: wrap;
+    gap: 6px;
+}
+
+.claude-writing-task-pill {
+    font-size: var(--font-ui-smallest);
+    padding: 2px 8px;
+    border-radius: 999px;
+    border: 1px solid var(--background-modifier-border);
+    color: var(--text-muted);
+    background: var(--background-primary);
+}
+
+.claude-writing-task-stages {
+    display: flex;
+    flex-direction: column;
+    gap: 8px;
+}
+
+.claude-writing-stage-actions,
+.claude-writing-state-actions {
+    display: flex;
+    gap: 6px;
+    flex-wrap: wrap;
+}
+
+.claude-writing-stage-button,
+.claude-writing-state-button {
+    font-size: var(--font-ui-smallest);
+    padding: 4px 8px;
+    border-radius: 6px;
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-primary);
+    color: var(--text-muted);
+    cursor: pointer;
+    transition: all var(--claude-transition-fast) ease;
+}
+
+.claude-writing-stage-button:hover,
+.claude-writing-state-button:hover {
+    border-color: var(--claude-neural-border);
+    color: var(--claude-neural-glow);
+    background: color-mix(in srgb, var(--claude-neural-subtle) 70%, var(--background-primary));
+}
+
+.claude-writing-stage-button.is-active {
+    color: var(--claude-neural-glow);
+    border-color: var(--claude-neural-base);
+}
+
+.claude-writing-state-button.is-primary {
+    background: linear-gradient(135deg, var(--claude-neural-base) 0%, var(--claude-neural-dim) 100%);
+    border-color: transparent;
+    color: white;
+}
+
+.claude-writing-task-uncited-list {
+    margin: 6px 0 0;
+    padding-left: 18px;
+    color: #f59e0b;
+    font-size: var(--font-ui-smallest);
+    line-height: 1.4;
+}
+
+.claude-writing-task-empty {
+    padding: 12px;
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.claude-writing-task-empty-title {
+    font-size: var(--font-ui-smaller);
+    color: var(--text-normal);
+    font-weight: 600;
+}
+
+.claude-writing-task-empty-text {
+    font-size: var(--font-ui-smallest);
+    color: var(--text-muted);
+    line-height: 1.45;
+}
+
+.claude-writing-task-empty-action {
+    align-self: flex-start;
+    font-size: var(--font-ui-smallest);
+    border: 1px solid var(--claude-neural-border);
+    background: color-mix(in srgb, var(--claude-neural-subtle) 70%, var(--background-primary));
+    color: var(--claude-neural-glow);
+    border-radius: 6px;
+    padding: 4px 10px;
+    cursor: pointer;
+}
+
+.claude-writing-task-empty-action:hover {
+    border-color: var(--claude-neural-base);
+}
+
+.claude-writing-version-list {
+    display: flex;
+    flex-direction: column;
+    gap: 6px;
+}
+
+.claude-writing-version-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 6px 8px;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 8px;
+    background: var(--background-primary);
+}
+
+.claude-writing-version-row.is-current {
+    border-color: var(--claude-neural-base);
+    background: color-mix(in srgb, var(--claude-neural-subtle) 60%, var(--background-primary));
+}
+
+.claude-writing-version-meta {
+    min-width: 0;
+    flex: 1;
+}
+
+.claude-writing-version-label {
+    font-size: var(--font-ui-smallest);
+    color: var(--text-normal);
+    font-weight: 600;
+    display: flex;
+    align-items: center;
+    gap: 6px;
+}
+
+.claude-writing-version-current {
+    font-size: var(--font-ui-smallest);
+    color: var(--claude-neural-glow);
+    border: 1px solid var(--claude-neural-border);
+    border-radius: 999px;
+    padding: 1px 6px;
+    font-weight: 600;
+}
+
+.claude-writing-version-detail {
+    margin-top: 2px;
+    font-size: var(--font-ui-smallest);
+    color: var(--text-muted);
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+.claude-writing-version-rollback {
+    border: 1px solid var(--background-modifier-border);
+    background: var(--background-secondary);
+    color: var(--text-muted);
+    border-radius: 6px;
+    font-size: var(--font-ui-smallest);
+    padding: 4px 8px;
+    cursor: pointer;
+    transition: all var(--claude-transition-fast) ease;
+}
+
+.claude-writing-version-rollback:hover:not(:disabled) {
+    border-color: var(--claude-neural-border);
+    color: var(--claude-neural-glow);
+}
+
+.claude-writing-version-rollback:disabled {
+    opacity: 0.5;
+    cursor: default;
+}
+
+.claude-chat-input-actions {
+    flex-wrap: wrap;
+    justify-content: flex-start;
+}
