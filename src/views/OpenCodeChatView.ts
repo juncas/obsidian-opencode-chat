@@ -3,6 +3,7 @@ import OpenCodeChatPlugin from '../main';
 import { CitationCoverageReport, CitationQualityService } from '../services/CitationQualityService';
 import { ContextResolver } from '../services/ContextResolver';
 import { OpenCodeServer } from '../services/OpenCodeServer';
+import { PublishAssistantService } from '../services/PublishAssistantService';
 import { SessionManager } from '../services/SessionManager';
 import { WritingWorkflowService } from '../services/WritingWorkflowService';
 import { ChatInput } from '../ui/ChatInput';
@@ -28,6 +29,7 @@ import type {
     WritingTask,
     WritingTaskStatus,
 } from '../types/writing';
+import { unifiedDiff } from '../services/DraftDiffService';
 
 const ASK_PERMISSIONS: PermissionRule[] = [
     { permission: 'bash', pattern: '*', action: 'ask' },
@@ -59,6 +61,7 @@ export class OpenCodeChatView extends ItemView {
     private readonly contextResolver: ContextResolver;
     private readonly writingWorkflow: WritingWorkflowService;
     private readonly citationQualityService: CitationQualityService;
+    private readonly publishAssistant: PublishAssistantService;
     private readonly pendingMetaByServerSessionId: Map<string, WorkflowExecutionMeta> = new Map();
     private readonly citationReportBySessionId: Map<string, CitationCoverageReport> = new Map();
 
@@ -85,6 +88,7 @@ export class OpenCodeChatView extends ItemView {
         this.contextResolver = new ContextResolver(plugin.app);
         this.writingWorkflow = new WritingWorkflowService();
         this.citationQualityService = new CitationQualityService();
+        this.publishAssistant = new PublishAssistantService(plugin.app);
 
         this.boundHandlers = {
             onTextDelta: this.handleTextDelta.bind(this),
@@ -165,6 +169,7 @@ export class OpenCodeChatView extends ItemView {
             onResumeTask: () => this.updateCurrentWritingTaskStatus('active'),
             onCompleteTask: () => this.updateCurrentWritingTaskStatus('completed'),
             onRollbackDraftVersion: (versionId) => this.rollbackToDraftVersion(versionId),
+            onCompareDraftVersion: (versionId) => this.compareDraftVersion(versionId),
             onUpdateTaskProperty: (key, value) => {
                 const task = this.sessionManager.getCurrentWritingTask();
                 if (task && (key === 'audience' || key === 'tone' || key === 'targetLength')) {
@@ -545,6 +550,49 @@ export class OpenCodeChatView extends ItemView {
         );
     }
 
+    private compareDraftVersion(versionId: string): void {
+        const task = this.getCurrentWritingTask();
+        if (!task) {
+            this.addSystemNotice('No active writing task.');
+            return;
+        }
+
+        const targetVersion = task.draftVersions.find((v) => v.id === versionId);
+        if (!targetVersion) {
+            this.addSystemNotice('Draft version not found.');
+            return;
+        }
+
+        const currentVersion = task.draftVersions.find((v) => v.id === task.currentDraftVersionId);
+        if (!currentVersion) {
+            this.addSystemNotice('No current draft version to compare against.');
+            return;
+        }
+
+        const diff = unifiedDiff(
+            targetVersion.content,
+            currentVersion.content,
+            targetVersion.label,
+            currentVersion.label
+        );
+
+        if (!diff) {
+            this.addSystemNotice(`**${targetVersion.label}** and **${currentVersion.label}** are identical.`);
+            return;
+        }
+
+        const notice = [
+            `## Draft Comparison`,
+            `Comparing **${targetVersion.label}** → **${currentVersion.label}**`,
+            '',
+            '```diff',
+            diff,
+            '```',
+        ].join('\n');
+
+        this.addSystemNotice(notice);
+    }
+
     private captureDraftVersionFromAssistant(
         stage: WritingStage,
         assistantText: string,
@@ -744,12 +792,16 @@ export class OpenCodeChatView extends ItemView {
         }
 
         const stageRequest = payload || `Continue task "${task.title}" in ${stage} stage.`;
+        const publishContext = stage === 'publish'
+            ? this.publishAssistant.buildPublishContextBlock(this.publishAssistant.gatherVaultContext())
+            : undefined;
         const promptToSend = this.writingWorkflow.buildStagePrompt(
             stage,
             stageRequest,
             contextSnapshot,
             task,
-            contextBlock
+            contextBlock,
+            publishContext
         );
 
         const shouldCapture = stage === 'draft' || stage === 'polish' || stage === 'publish';

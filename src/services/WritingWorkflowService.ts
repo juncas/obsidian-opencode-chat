@@ -100,23 +100,37 @@ const STAGE_DESCRIPTORS: Record<WritingStage, StageDescriptor> = {
     },
     publish: {
         label: 'Publish',
-        goal: 'Package final output for vault publishing with metadata and action checklist.',
+        goal: 'Package final output for vault publishing with complete YAML frontmatter, metadata, and action checklist. Use the vault metadata section (if present) to suggest tags from existing taxonomy and a file path matching the vault folder structure.',
         outputContract: [
             '## Final Title',
             '- ...',
             '',
+            '## YAML Frontmatter',
+            '```yaml',
+            '---',
+            'title: <final title>',
+            'date: <YYYY-MM-DD>',
+            'tags:',
+            '  - <prefer existing tags from vault taxonomy>',
+            '  - <only add new tags when no existing tag fits>',
+            'summary: <1-2 sentence summary>',
+            'author: <author or leave blank>',
+            '---',
+            '```',
+            '',
             '## Final Content',
-            '<ready-to-publish content>',
+            '<ready-to-publish markdown content>',
             '',
             '## Metadata',
-            '- Tags:',
-            '- Summary:',
-            '- Suggested file path:',
+            '- Tags: <list, preferring existing vault tags>',
+            '- Summary: <1-2 sentences>',
+            '- Suggested file path: <match vault folder structure>',
             '',
             '## Publish Checklist',
             '- [ ] Citation validation',
             '- [ ] Link validation',
             '- [ ] Style review',
+            '- [ ] Frontmatter completeness',
         ].join('\n'),
     },
 };
@@ -291,7 +305,8 @@ export class WritingWorkflowService {
         userRequest: string,
         context: WritingContextSnapshot,
         task: WritingTask,
-        contextBlock: string
+        contextBlock: string,
+        publishContextBlock?: string
     ): string {
         const descriptor = STAGE_DESCRIPTORS[stage];
         const safeRequest = userRequest.trim() || '(no additional request)';
@@ -338,6 +353,11 @@ export class WritingWorkflowService {
             lines.push('```markdown');
             lines.push(this.trimBaselineContent(baselineDraft.content));
             lines.push('```');
+        }
+
+        if (publishContextBlock) {
+            lines.push('');
+            lines.push(publishContextBlock);
         }
 
         return lines.join('\n');
