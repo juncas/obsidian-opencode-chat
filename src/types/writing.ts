@@ -8,6 +8,12 @@ export type WritingStage =
 
 export type WritingTaskStatus = 'active' | 'paused' | 'completed';
 
+export interface StageTransition {
+    from: WritingStage;
+    to: WritingStage;
+    timestamp: Date;
+}
+
 export interface DraftVersion {
     id: string;
     stage: WritingStage;
@@ -29,6 +35,7 @@ export interface WritingTask {
     status: WritingTaskStatus;
     draftVersions: DraftVersion[];
     currentDraftVersionId: string | null;
+    stageHistory: StageTransition[];
     createdAt: Date;
     updatedAt: Date;
 }

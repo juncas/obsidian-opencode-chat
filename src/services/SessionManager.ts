@@ -28,6 +28,10 @@ export class SessionManager {
                         ...version,
                         createdAt: new Date(version.createdAt),
                     })),
+                    stageHistory: (s.writingTask.stageHistory || []).map((transition) => ({
+                        ...transition,
+                        timestamp: new Date(transition.timestamp),
+                    })),
                     currentDraftVersionId: s.writingTask.currentDraftVersionId || null,
                     createdAt: new Date(s.writingTask.createdAt),
                     updatedAt: new Date(s.writingTask.updatedAt),
@@ -202,6 +206,10 @@ export class SessionManager {
             draftVersions: (task.draftVersions || []).map((version) => ({
                 ...version,
                 createdAt: new Date(version.createdAt),
+            })),
+            stageHistory: (task.stageHistory || []).map((transition) => ({
+                ...transition,
+                timestamp: new Date(transition.timestamp),
             })),
             currentDraftVersionId: task.currentDraftVersionId || null,
             createdAt: new Date(task.createdAt),

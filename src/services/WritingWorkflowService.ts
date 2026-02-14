@@ -135,9 +135,15 @@ export class WritingWorkflowService {
             createdAt: new Date(version.createdAt),
         }));
 
+        const stageHistory = (task.stageHistory || []).map((transition) => ({
+            ...transition,
+            timestamp: new Date(transition.timestamp),
+        }));
+
         this.tasksBySession.set(sessionKey, {
             ...task,
             draftVersions,
+            stageHistory,
             currentDraftVersionId: task.currentDraftVersionId || draftVersions[draftVersions.length - 1]?.id || null,
             createdAt: new Date(task.createdAt),
             updatedAt: new Date(task.updatedAt),
@@ -158,6 +164,7 @@ export class WritingWorkflowService {
             status: 'active',
             draftVersions: [],
             currentDraftVersionId: null,
+            stageHistory: [],
             createdAt: now,
             updatedAt: now,
         };
@@ -192,6 +199,16 @@ export class WritingWorkflowService {
         if (!task) {
             return null;
         }
+
+        const previousStage = task.stage;
+        if (previousStage !== stage) {
+            task.stageHistory.push({
+                from: previousStage,
+                to: stage,
+                timestamp: new Date(),
+            });
+        }
+
         task.stage = stage;
         task.updatedAt = new Date();
         return task;
@@ -252,10 +269,19 @@ export class WritingWorkflowService {
             return null;
         }
 
+        const previousStage = task.stage;
         task.currentDraftVersionId = version.id;
         task.stage = version.stage;
         task.status = 'active';
         task.updatedAt = new Date();
+
+        if (previousStage !== version.stage) {
+            task.stageHistory.push({
+                from: previousStage,
+                to: version.stage,
+                timestamp: new Date(),
+            });
+        }
 
         return { task, version };
     }
