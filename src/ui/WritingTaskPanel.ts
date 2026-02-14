@@ -42,6 +42,7 @@ export class WritingTaskPanel {
             onResumeTask: () => void;
             onCompleteTask: () => void;
             onRollbackDraftVersion: (versionId: string) => void;
+            onCompareDraftVersion: (versionId: string) => void;
             onUpdateTaskProperty?: (key: string, value: string) => void;
         }
     ) {
@@ -399,7 +400,18 @@ export class WritingTaskPanel {
             text: detailParts.join(' · '),
         });
 
-        const rollbackBtn = row.createEl('button', {
+        const actions = row.createEl('div', {
+            cls: 'claude-writing-version-actions',
+        });
+
+        const compareBtn = actions.createEl('button', {
+            cls: 'claude-writing-version-compare',
+            text: 'Compare',
+        });
+        compareBtn.disabled = isCurrent;
+        compareBtn.addEventListener('click', () => this.callbacks.onCompareDraftVersion(version.id));
+
+        const rollbackBtn = actions.createEl('button', {
             cls: 'claude-writing-version-rollback',
             text: 'Rollback',
         });
