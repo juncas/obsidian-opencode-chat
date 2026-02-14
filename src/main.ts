@@ -136,6 +136,7 @@ export default class OpenCodeChatPlugin extends Plugin {
                     name: 'Migrated Session',
                     sessionId: this.data.sessionId,
                     serverSessionId: null,
+                    writingTask: null,
                     createdAt: new Date(),
                     updatedAt: new Date(),
                     messages: [],

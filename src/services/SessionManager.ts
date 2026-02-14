@@ -1,4 +1,5 @@
 import { Session, ChatMessage } from '../types';
+import type { WritingTask } from '../types/writing';
 
 /**
  * Manages multiple conversation sessions
@@ -20,6 +21,18 @@ export class SessionManager {
             ...s,
             createdAt: new Date(s.createdAt),
             updatedAt: new Date(s.updatedAt),
+            writingTask: s.writingTask
+                ? {
+                    ...s.writingTask,
+                    draftVersions: (s.writingTask.draftVersions || []).map((version) => ({
+                        ...version,
+                        createdAt: new Date(version.createdAt),
+                    })),
+                    currentDraftVersionId: s.writingTask.currentDraftVersionId || null,
+                    createdAt: new Date(s.writingTask.createdAt),
+                    updatedAt: new Date(s.writingTask.updatedAt),
+                }
+                : null,
             messages: s.messages.map(m => ({
                 ...m,
                 timestamp: new Date(m.timestamp),
@@ -67,6 +80,7 @@ export class SessionManager {
             name,
             sessionId: null,
             serverSessionId: null,
+            writingTask: null,
             createdAt: new Date(),
             updatedAt: new Date(),
             messages: [],
@@ -163,6 +177,38 @@ export class SessionManager {
     getCurrentServerSessionId(): string | null {
         const session = this.getCurrentSession();
         return session ? session.serverSessionId : null;
+    }
+
+    getCurrentWritingTask(): WritingTask | null {
+        const session = this.getCurrentSession();
+        return session?.writingTask || null;
+    }
+
+    setCurrentWritingTask(task: WritingTask | null): void {
+        const session = this.getCurrentSession();
+        if (!session) {
+            return;
+        }
+
+        if (!task) {
+            session.writingTask = null;
+            session.updatedAt = new Date();
+            this.notifyChange();
+            return;
+        }
+
+        session.writingTask = {
+            ...task,
+            draftVersions: (task.draftVersions || []).map((version) => ({
+                ...version,
+                createdAt: new Date(version.createdAt),
+            })),
+            currentDraftVersionId: task.currentDraftVersionId || null,
+            createdAt: new Date(task.createdAt),
+            updatedAt: new Date(task.updatedAt),
+        };
+        session.updatedAt = new Date();
+        this.notifyChange();
     }
 
     /**

@@ -1,10 +1,14 @@
 import { ItemView, WorkspaceLeaf } from 'obsidian';
 import OpenCodeChatPlugin from '../main';
+import { CitationCoverageReport, CitationQualityService } from '../services/CitationQualityService';
+import { ContextResolver } from '../services/ContextResolver';
 import { OpenCodeServer } from '../services/OpenCodeServer';
 import { SessionManager } from '../services/SessionManager';
+import { WritingWorkflowService } from '../services/WritingWorkflowService';
 import { ChatInput } from '../ui/ChatInput';
 import { MessageContainer } from '../ui/MessageContainer';
 import { SessionTabs } from '../ui/SessionTabs';
+import { WritingTaskPanel } from '../ui/WritingTaskPanel';
 import { OPENCODE_CHAT_VIEW_TYPE } from '../types';
 import type {
     PermissionRequest,
@@ -16,6 +20,14 @@ import type {
     FileDiff,
     ToolPart,
 } from '../types/opencode';
+import type {
+    AuditScope,
+    PreparedWorkflowCommand,
+    WorkflowExecutionMeta,
+    WritingStage,
+    WritingTask,
+    WritingTaskStatus,
+} from '../types/writing';
 
 const ASK_PERMISSIONS: PermissionRule[] = [
     { permission: 'bash', pattern: '*', action: 'ask' },
@@ -23,14 +35,32 @@ const ASK_PERMISSIONS: PermissionRule[] = [
     { permission: 'edit', pattern: '*', action: 'ask' },
 ];
 
+const STAGE_ALIAS: Record<string, WritingStage> = {
+    start: 'discover',
+    discover: 'discover',
+    outline: 'outline',
+    draft: 'draft',
+    evidence: 'evidence',
+    polish: 'polish',
+    publish: 'publish',
+};
+
+const AUDIT_SCOPES: AuditScope[] = ['full', 'broken', 'orphan', 'duplicate', 'stale'];
+
 export class OpenCodeChatView extends ItemView {
     plugin: OpenCodeChatPlugin;
     sessionManager: SessionManager;
     messageContainer: MessageContainer;
     chatInput: ChatInput;
     sessionTabs: SessionTabs;
+    writingTaskPanel: WritingTaskPanel | null = null;
     isProcessing: boolean = false;
     private statusBadgeEl: HTMLElement | null = null;
+    private readonly contextResolver: ContextResolver;
+    private readonly writingWorkflow: WritingWorkflowService;
+    private readonly citationQualityService: CitationQualityService;
+    private readonly pendingMetaByServerSessionId: Map<string, WorkflowExecutionMeta> = new Map();
+    private readonly citationReportBySessionId: Map<string, CitationCoverageReport> = new Map();
 
     private boundHandlers: {
         onTextDelta: (sessionID: string, partID: string, delta: string, fullText: string) => void;
@@ -52,6 +82,9 @@ export class OpenCodeChatView extends ItemView {
         super(leaf);
         this.plugin = plugin;
         this.sessionManager = plugin.sessionManager;
+        this.contextResolver = new ContextResolver(plugin.app);
+        this.writingWorkflow = new WritingWorkflowService();
+        this.citationQualityService = new CitationQualityService();
 
         this.boundHandlers = {
             onTextDelta: this.handleTextDelta.bind(this),
@@ -125,6 +158,18 @@ export class OpenCodeChatView extends ItemView {
         });
         this.statusBadgeEl.setText('Connecting...');
 
+        this.writingTaskPanel = new WritingTaskPanel(contentEl, {
+            onStartTask: () => this.queueCommandTemplate('/write start '),
+            onRunStage: (stage) => this.queueCommandTemplate(`/write ${stage} `),
+            onPauseTask: () => this.updateCurrentWritingTaskStatus('paused'),
+            onResumeTask: () => this.updateCurrentWritingTaskStatus('active'),
+            onCompleteTask: () => this.updateCurrentWritingTaskStatus('completed'),
+            onRollbackDraftVersion: (versionId) => this.rollbackToDraftVersion(versionId),
+        });
+
+        this.syncWorkflowTaskFromSession();
+        this.refreshWritingTaskPanel();
+
         this.messageContainer = new MessageContainer(contentEl, this.app);
 
         this.messageContainer.setOnEditMessage(async (index: number, content: string) => {
@@ -140,6 +185,11 @@ export class OpenCodeChatView extends ItemView {
         this.createActionButton(inputActionsEl, 'Export', 'Export conversation to Markdown (Ctrl+Shift+E)', () => this.exportConversation());
         this.createActionButton(inputActionsEl, 'Clear', 'Clear chat history (Ctrl+K)', () => this.clearHistory());
         this.createActionButton(inputActionsEl, 'Regenerate', 'Regenerate last response', () => this.regenerateLast());
+        this.createActionButton(inputActionsEl, 'Write', 'Create a writing task template', () => this.queueCommandTemplate('/write start '));
+        this.createActionButton(inputActionsEl, 'Outline', 'Generate evidence-aware outline', () => this.queueCommandTemplate('/write outline '));
+        this.createActionButton(inputActionsEl, 'Draft', 'Generate first draft with citations', () => this.queueCommandTemplate('/write draft '));
+        this.createActionButton(inputActionsEl, 'Evidence', 'Run evidence review workflow', () => this.queueCommandTemplate('/write evidence '));
+        this.createActionButton(inputActionsEl, 'KB Audit', 'Run knowledge base health audit', () => this.queueCommandTemplate('/kb audit full '));
 
         this.chatInput = new ChatInput(
             contentEl,
@@ -167,6 +217,14 @@ export class OpenCodeChatView extends ItemView {
         button.setAttribute('aria-label', tooltip);
         button.setAttribute('title', tooltip);
         button.addEventListener('click', onClick);
+    }
+
+    private queueCommandTemplate(template: string): void {
+        if (!this.chatInput || this.isProcessing) {
+            return;
+        }
+        this.chatInput.setValue(template);
+        this.chatInput.focus();
     }
 
     private subscribeToServer(): void {
@@ -213,6 +271,8 @@ export class OpenCodeChatView extends ItemView {
     }
 
     private handleSessionIdle(sessionID: string): void {
+        const pendingMeta = this.pendingMetaByServerSessionId.get(sessionID);
+        this.pendingMetaByServerSessionId.delete(sessionID);
         if (!this.isCurrentSession(sessionID)) return;
 
         this.messageContainer.finalizeAssistantMessage();
@@ -221,6 +281,12 @@ export class OpenCodeChatView extends ItemView {
         const lastMessage = messages[messages.length - 1];
         if (lastMessage && lastMessage.role === 'assistant') {
             this.sessionManager.addMessage(lastMessage);
+
+            if (pendingMeta?.requiresCitationCheck) {
+                const report = this.citationQualityService.evaluate(lastMessage.content);
+                this.citationReportBySessionId.set(sessionID, report);
+                this.addSystemNotice(this.buildCitationCoverageNotice(report));
+            }
         }
 
         this.updateSessionList();
@@ -239,6 +305,9 @@ export class OpenCodeChatView extends ItemView {
     }
 
     private handleSessionError(sessionID: string | undefined, error: { message: string; code?: string } | undefined): void {
+        if (sessionID) {
+            this.pendingMetaByServerSessionId.delete(sessionID);
+        }
         if (sessionID && !this.isCurrentSession(sessionID)) return;
 
         const errorMsg = error?.message || 'Unknown error';
@@ -357,6 +426,14 @@ export class OpenCodeChatView extends ItemView {
 • \`Shift+Enter\` - New line
 • \`Escape\` - Stop generation
 
+**Workflow Commands:**
+• \`/write start <topic>\` - Start a writing task discovery
+• \`/write outline [requirements]\` - Create source-aware outline
+• \`/write draft [requirements]\` - Produce full draft with citations
+• \`/write evidence [question]\` - Run evidence QA audit
+• \`/kb audit [full|broken|orphan|duplicate|stale]\` - Run KB health audit
+• \`/qa <question>\` - Ask source-backed QA in current context
+
 **Tips:**
 • Click on user messages to edit and resend
 • Hover over messages to copy content
@@ -381,10 +458,381 @@ export class OpenCodeChatView extends ItemView {
             this.sessionManager.getSessions(),
             this.sessionManager.getCurrentSession()?.id || null
         );
+        this.refreshWritingTaskPanel();
+    }
+
+    private addSystemNotice(content: string): void {
+        this.messageContainer.addMessage({
+            role: 'system',
+            content,
+            timestamp: new Date(),
+        });
+    }
+
+    private getCurrentSessionKey(): string {
+        return this.sessionManager.getCurrentSession()?.id || 'default-session';
+    }
+
+    private getCurrentWritingTask(): WritingTask | null {
+        return this.sessionManager.getCurrentWritingTask();
+    }
+
+    private syncWorkflowTaskFromSession(): void {
+        const sessionKey = this.getCurrentSessionKey();
+        this.writingWorkflow.hydrateTask(sessionKey, this.getCurrentWritingTask());
+    }
+
+    private refreshWritingTaskPanel(): void {
+        if (!this.writingTaskPanel) {
+            return;
+        }
+
+        const sessionId = this.currentServerSessionId || '';
+        const report = sessionId ? this.citationReportBySessionId.get(sessionId) || null : null;
+        this.writingTaskPanel.update(this.getCurrentWritingTask(), report);
+    }
+
+    private updateCurrentWritingTaskStatus(status: WritingTaskStatus): void {
+        const task = this.getCurrentWritingTask();
+        if (!task) {
+            this.addSystemNotice('No active writing task. Use `/write start <topic>` first.');
+            this.queueCommandTemplate('/write start ');
+            return;
+        }
+
+        const nextTask: WritingTask = {
+            ...task,
+            status,
+            updatedAt: new Date(),
+        };
+        const sessionKey = this.getCurrentSessionKey();
+        this.writingWorkflow.hydrateTask(sessionKey, nextTask);
+        this.sessionManager.setCurrentWritingTask(nextTask);
+        this.refreshWritingTaskPanel();
+        this.addSystemNotice(`Writing task status updated to **${status}**.`);
+    }
+
+    private rollbackToDraftVersion(versionId: string): void {
+        const sessionKey = this.getCurrentSessionKey();
+        this.syncWorkflowTaskFromSession();
+        const rolledBack = this.writingWorkflow.rollbackToDraftVersion(sessionKey, versionId);
+        if (!rolledBack) {
+            this.addSystemNotice('Rollback failed: draft version not found.');
+            return;
+        }
+
+        this.sessionManager.setCurrentWritingTask(rolledBack.task);
+        this.refreshWritingTaskPanel();
+        this.addSystemNotice(
+            `Rolled back to **${rolledBack.version.label}**. Use \`/write ${rolledBack.version.stage}\` to continue from this baseline.`
+        );
+    }
+
+    private captureDraftVersionFromAssistant(
+        stage: WritingStage,
+        assistantText: string,
+        report: CitationCoverageReport | null
+    ): void {
+        const sessionKey = this.getCurrentSessionKey();
+        this.syncWorkflowTaskFromSession();
+        const result = this.writingWorkflow.addDraftVersion(sessionKey, stage, assistantText, {
+            citationCoverage: report?.coverage,
+            sourceCount: report?.sourceCount,
+        });
+        if (!result) {
+            return;
+        }
+
+        this.sessionManager.setCurrentWritingTask(result.task);
+        this.refreshWritingTaskPanel();
+        if (result.created) {
+            this.addSystemNotice(`Saved draft version: **${result.version.label}**`);
+        }
+    }
+
+    private buildCitationCoverageNotice(report: CitationCoverageReport): string {
+        const lines: string[] = [
+            '## Citation Coverage Report',
+            `- Coverage: ${Math.round(report.coverage * 100)}% (${report.citedClaims}/${report.totalClaims})`,
+            `- Sources listed: ${report.sourceCount}`,
+        ];
+
+        if (report.totalClaims === 0) {
+            lines.push('- No claim lines detected for citation scoring.');
+            return lines.join('\n');
+        }
+
+        if (report.uncitedClaims.length === 0) {
+            lines.push('- Uncited claims: none');
+            return lines.join('\n');
+        }
+
+        lines.push('### Uncited Claims');
+        for (const claim of report.uncitedClaims.slice(0, 3)) {
+            lines.push(`- ${claim}`);
+        }
+        lines.push('- Action: add `[[source-note]]` links for uncited claims.');
+
+        return lines.join('\n');
+    }
+
+    private prepareWorkflowCommand(rawCommand: string): PreparedWorkflowCommand {
+        const command = rawCommand.trim();
+
+        if (/^\/help(?:\s+workflow)?$/i.test(command)) {
+            return {
+                displayCommand: command,
+                promptToSend: null,
+                localNotice: this.writingWorkflow.buildWorkflowHelp(),
+                meta: {
+                    source: 'plain',
+                    requiresCitationCheck: false,
+                },
+            };
+        }
+
+        if (/^\/write\b/i.test(command)) {
+            return this.prepareWriteWorkflowCommand(command);
+        }
+
+        if (/^\/kb\s+audit\b/i.test(command)) {
+            return this.prepareKbAuditCommand(command);
+        }
+
+        if (/^\/qa\b/i.test(command)) {
+            return this.prepareEvidenceQaCommand(command);
+        }
+
+        return {
+            displayCommand: command,
+            promptToSend: command,
+            meta: {
+                source: 'plain',
+                requiresCitationCheck: false,
+            },
+        };
+    }
+
+    private prepareWriteWorkflowCommand(command: string): PreparedWorkflowCommand {
+        const match = command.match(/^\/write\s+([^\s]+)(?:\s+([\s\S]+))?$/i);
+        if (!match) {
+            return {
+                displayCommand: command,
+                promptToSend: null,
+                localNotice: 'Usage: `/write start <topic>` or `/write outline|draft|evidence|polish|publish [requirements]`',
+                meta: {
+                    source: 'write',
+                    requiresCitationCheck: false,
+                },
+            };
+        }
+
+        const action = match[1].toLowerCase();
+        const payload = (match[2] || '').trim();
+        const stage = STAGE_ALIAS[action];
+        if (!stage) {
+            return {
+                displayCommand: command,
+                promptToSend: null,
+                localNotice: `Unknown /write action: ${action}. Use \`/help workflow\` for available commands.`,
+                meta: {
+                    source: 'write',
+                    requiresCitationCheck: false,
+                },
+            };
+        }
+
+        const sessionKey = this.getCurrentSessionKey();
+        this.writingWorkflow.hydrateTask(sessionKey, this.getCurrentWritingTask());
+        const contextSnapshot = this.contextResolver.resolveSnapshot(command);
+        const contextBlock = this.contextResolver.buildContextBlock(contextSnapshot);
+        const existingTask = this.writingWorkflow.getTask(sessionKey);
+
+        if (stage === 'discover') {
+            if (!payload && !existingTask) {
+                return {
+                    displayCommand: command,
+                    promptToSend: null,
+                    localNotice: 'Usage: `/write start <topic>` (or create one task first, then use `/write discover`)',
+                    meta: {
+                        source: 'write',
+                        stage,
+                        requiresCitationCheck: false,
+                    },
+                };
+            }
+
+            const taskBase = payload
+                ? this.writingWorkflow.createTask(sessionKey, payload)
+                : this.writingWorkflow.ensureTask(sessionKey, existingTask?.objective || 'Untitled writing objective');
+            const task: WritingTask = {
+                ...taskBase,
+                stage: 'discover',
+                status: 'active',
+                updatedAt: new Date(),
+            };
+            this.writingWorkflow.hydrateTask(sessionKey, task);
+            this.sessionManager.setCurrentWritingTask(task);
+
+            if (payload && this.currentServerSessionId) {
+                this.citationReportBySessionId.delete(this.currentServerSessionId);
+            }
+
+            const stageRequest = payload || `Re-run discovery for writing task "${task.title}".`;
+            const promptToSend = this.writingWorkflow.buildStagePrompt(
+                'discover',
+                stageRequest,
+                contextSnapshot,
+                task,
+                contextBlock
+            );
+
+            return {
+                displayCommand: command,
+                promptToSend,
+                localNotice: payload
+                    ? `Writing task created: **${task.title}**`
+                    : `Workflow stage: **discover** · Task: **${task.title}**`,
+                meta: {
+                    source: 'write',
+                    stage,
+                    requiresCitationCheck: false,
+                },
+            };
+        }
+
+        const taskBase = this.writingWorkflow.ensureTask(sessionKey, payload || 'Untitled writing objective');
+        this.writingWorkflow.updateStage(sessionKey, stage);
+        const task: WritingTask = {
+            ...taskBase,
+            stage,
+            status: 'active',
+            updatedAt: new Date(),
+        };
+        this.writingWorkflow.hydrateTask(sessionKey, task);
+        this.sessionManager.setCurrentWritingTask(task);
+
+        if (stage === 'evidence') {
+            const question = payload || `Audit factual grounding for writing task "${task.title}".`;
+            return {
+                displayCommand: command,
+                promptToSend: this.writingWorkflow.buildEvidencePrompt(question, contextBlock),
+                localNotice: `Workflow stage: **evidence** · Task: **${task.title}**`,
+                meta: {
+                    source: 'write',
+                    stage,
+                    requiresCitationCheck: true,
+                },
+            };
+        }
+
+        const stageRequest = payload || `Continue task "${task.title}" in ${stage} stage.`;
+        const promptToSend = this.writingWorkflow.buildStagePrompt(
+            stage,
+            stageRequest,
+            contextSnapshot,
+            task,
+            contextBlock
+        );
+
+        return {
+            displayCommand: command,
+            promptToSend,
+            localNotice: `Workflow stage: **${stage}** · Task: **${task.title}**`,
+            meta: {
+                source: 'write',
+                stage,
+                requiresCitationCheck: true,
+            },
+        };
+    }
+
+    private prepareKbAuditCommand(command: string): PreparedWorkflowCommand {
+        const match = command.match(/^\/kb\s+audit(?:\s+([^\s]+))?(?:\s+([\s\S]+))?$/i);
+        if (!match) {
+            return {
+                displayCommand: command,
+                promptToSend: null,
+                localNotice: 'Usage: `/kb audit [full|broken|orphan|duplicate|stale] [extra requirements]`',
+                meta: {
+                    source: 'kb',
+                    requiresCitationCheck: false,
+                },
+            };
+        }
+
+        const firstToken = (match[1] || '').toLowerCase();
+        const remaining = (match[2] || '').trim();
+
+        let scope: AuditScope = 'full';
+        let userRequest = '';
+
+        if (AUDIT_SCOPES.includes(firstToken as AuditScope)) {
+            scope = firstToken as AuditScope;
+            userRequest = remaining;
+        } else {
+            userRequest = [firstToken, remaining].filter((part) => part.length > 0).join(' ').trim();
+        }
+
+        const contextSnapshot = this.contextResolver.resolveSnapshot(command);
+        const contextBlock = this.contextResolver.buildContextBlock(contextSnapshot);
+        const promptToSend = this.writingWorkflow.buildKbAuditPrompt(scope, userRequest, contextBlock);
+
+        return {
+            displayCommand: command,
+            promptToSend,
+            localNotice: `Knowledge base audit scope: **${scope}**`,
+            meta: {
+                source: 'kb',
+                requiresCitationCheck: false,
+            },
+        };
+    }
+
+    private prepareEvidenceQaCommand(command: string): PreparedWorkflowCommand {
+        const match = command.match(/^\/qa(?:\s+([\s\S]+))?$/i);
+        const question = (match?.[1] || '').trim();
+        if (!question) {
+            return {
+                displayCommand: command,
+                promptToSend: null,
+                localNotice: 'Usage: `/qa <question>`',
+                meta: {
+                    source: 'qa',
+                    requiresCitationCheck: false,
+                },
+            };
+        }
+
+        const contextSnapshot = this.contextResolver.resolveSnapshot(command);
+        const contextBlock = this.contextResolver.buildContextBlock(contextSnapshot);
+        const promptToSend = this.writingWorkflow.buildEvidencePrompt(question, contextBlock);
+
+        return {
+            displayCommand: command,
+            promptToSend,
+            localNotice: 'Running evidence QA workflow with strict citation checks.',
+            meta: {
+                source: 'qa',
+                requiresCitationCheck: true,
+            },
+        };
     }
 
     async handleCommand(command: string) {
         if (this.isProcessing) return;
+
+        const preparedCommand = this.prepareWorkflowCommand(command);
+        if (!preparedCommand.promptToSend) {
+            if (preparedCommand.localNotice) {
+                this.addSystemNotice(preparedCommand.localNotice);
+            }
+            this.refreshWritingTaskPanel();
+            return;
+        }
+
+        this.refreshWritingTaskPanel();
+
         if (!this.server) {
             console.error('OpenCodeChatView: Server not available');
             return;
@@ -393,13 +841,17 @@ export class OpenCodeChatView extends ItemView {
         this.isProcessing = true;
         this.chatInput.setProcessing(true);
 
-        this.messageContainer.addUserMessage(command);
+        this.messageContainer.addUserMessage(preparedCommand.displayCommand);
 
         this.sessionManager.addMessage({
             role: 'user',
-            content: command,
+            content: preparedCommand.displayCommand,
             timestamp: new Date(),
         });
+
+        if (preparedCommand.localNotice) {
+            this.addSystemNotice(preparedCommand.localNotice);
+        }
 
         this.messageContainer.createAssistantMessage();
 
@@ -412,7 +864,11 @@ export class OpenCodeChatView extends ItemView {
                 this.sessionManager.updateServerSessionId(serverSessionId);
             }
 
-            await this.server.sendMessage(serverSessionId, command);
+            await this.server.sendMessage(serverSessionId, preparedCommand.promptToSend);
+            this.pendingMetaByServerSessionId.set(serverSessionId, preparedCommand.meta || {
+                source: 'plain',
+                requiresCitationCheck: false,
+            });
         } catch (error: any) {
             console.error('OpenCodeChatView: Command error:', error);
             this.messageContainer.hideThinking();
@@ -435,6 +891,9 @@ export class OpenCodeChatView extends ItemView {
         if (!this.isProcessing) return;
 
         const serverSessionId = this.currentServerSessionId;
+        if (serverSessionId) {
+            this.pendingMetaByServerSessionId.delete(serverSessionId);
+        }
         if (serverSessionId && this.server) {
             this.server.abortSession(serverSessionId).catch((err) => {
                 console.error('OpenCodeChatView: Failed to abort session:', err);
@@ -450,7 +909,15 @@ export class OpenCodeChatView extends ItemView {
     }
 
     clearHistory() {
+        const sessionKey = this.getCurrentSessionKey();
         this.sessionManager.clearCurrentSession();
+        this.sessionManager.setCurrentWritingTask(null);
+        this.writingWorkflow.hydrateTask(sessionKey, null);
+        const serverSessionId = this.currentServerSessionId;
+        if (serverSessionId) {
+            this.citationReportBySessionId.delete(serverSessionId);
+            this.pendingMetaByServerSessionId.delete(serverSessionId);
+        }
         this.messageContainer.clear();
 
         this.messageContainer.addMessage({
@@ -473,6 +940,7 @@ export class OpenCodeChatView extends ItemView {
             return;
         }
 
+        this.syncWorkflowTaskFromSession();
         this.messageContainer.clear();
         this.loadCurrentSessionMessages();
         this.updateSessionList();
@@ -485,6 +953,7 @@ export class OpenCodeChatView extends ItemView {
     }
 
     deleteSession(sessionId: string) {
+        this.writingWorkflow.hydrateTask(sessionId, null);
         const deleted = this.sessionManager.deleteSession(sessionId);
         if (!deleted) {
             console.error('OpenCodeChatView: Failed to delete session:', sessionId);
@@ -568,6 +1037,10 @@ export class OpenCodeChatView extends ItemView {
     }
 
     async onClose() {
+        if (this.writingTaskPanel) {
+            this.writingTaskPanel.destroy();
+            this.writingTaskPanel = null;
+        }
         this.unsubscribeFromServer();
     }
 }

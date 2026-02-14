@@ -1,3 +1,5 @@
+import type { WritingTask } from './writing';
+
 export const OPENCODE_CHAT_VIEW_TYPE = 'claude-chat-view';
 
 export interface ChatMessage {
@@ -19,6 +21,7 @@ export interface Session {
     name: string;
     sessionId: string | null; // Deprecated: old CLI session ID
     serverSessionId: string | null; // OpenCode HTTP Server session ID
+    writingTask: WritingTask | null;
     createdAt: Date;
     updatedAt: Date;
     messages: ChatMessage[];
