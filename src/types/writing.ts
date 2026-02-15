@@ -40,7 +40,7 @@ export interface WritingTask {
     updatedAt: Date;
 }
 
-export type ContextSource = 'active' | 'mention' | 'recent';
+export type ContextSource = 'active' | 'mention' | 'recent' | 'search';
 
 export interface ContextFileReference {
     path: string;
@@ -55,6 +55,7 @@ export interface WritingContextSnapshot {
     missingMentionPaths: string[];
     contextFiles: ContextFileReference[];
     recentFiles: string[];
+    relatedFiles: ContextFileReference[];
 }
 
 export type AuditScope = 'full' | 'broken' | 'orphan' | 'duplicate' | 'stale';

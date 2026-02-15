@@ -1,5 +1,5 @@
 import { App, MarkdownView, TFile } from 'obsidian';
-import type { ContextFileReference, WritingContextSnapshot } from '../types/writing';
+import type { ContextFileReference, ContextSource, WritingContextSnapshot } from '../types/writing';
 
 const MAX_RECENT_FILES = 5;
 const MAX_SELECTION_CHARS = 1200;
@@ -12,12 +12,13 @@ interface MentionResolution {
 export class ContextResolver {
     constructor(private app: App) {}
 
-    resolveSnapshot(rawInput: string): WritingContextSnapshot {
+    resolveSnapshot(rawInput: string, searchQuery?: string): WritingContextSnapshot {
         const activeFile = this.app.workspace.getActiveFile();
         const mentionPaths = this.parseMentionPaths(rawInput);
         const mentionResolution = this.resolveMentionPaths(mentionPaths);
         const contextFiles = this.collectContextFiles(activeFile, mentionResolution.existing);
         const recentFiles = this.getRecentMarkdownFiles(contextFiles.map((item) => item.path));
+        const relatedFiles = searchQuery ? this.retrieveRelatedFiles(searchQuery) : [];
         const selection = this.getEditorSelection();
         const activeFileTags = this.extractFrontmatterTags(activeFile);
 
@@ -29,6 +30,7 @@ export class ContextResolver {
             missingMentionPaths: mentionResolution.missing,
             contextFiles,
             recentFiles,
+            relatedFiles,
         };
     }
 
@@ -59,6 +61,13 @@ export class ContextResolver {
             }
         }
 
+        if (snapshot.relatedFiles.length > 0) {
+            lines.push('- Related notes (search results):');
+            for (const file of snapshot.relatedFiles) {
+                lines.push(`  - [[${file.path}]]`);
+            }
+        }
+
         if (snapshot.recentFiles.length > 0) {
             lines.push('- Recently updated notes:');
             for (const filePath of snapshot.recentFiles) {
@@ -75,6 +84,32 @@ export class ContextResolver {
 
         lines.push('- Citation policy: use `[[path/to/note]]` for every key claim.');
         return lines.join('\n');
+    }
+
+    private retrieveRelatedFiles(query: string): ContextFileReference[] {
+        const terms = query.toLowerCase().split(/\s+/).filter((t) => t.length > 2);
+        if (terms.length === 0) return [];
+
+        const candidates = this.app.vault
+            .getMarkdownFiles()
+            .map((file) => {
+                let score = 0;
+                const name = file.basename.toLowerCase();
+                terms.forEach((term) => {
+                    if (name === term) score += 10;
+                    else if (name.includes(term)) score += 3;
+                });
+                return { file, score };
+            })
+            .filter((c) => c.score > 0)
+            .sort((a, b) => b.score - a.score || b.file.stat.mtime - a.file.stat.mtime)
+            .slice(0, 5)
+            .map((c) => ({
+                path: c.file.path,
+                source: 'search' as ContextSource,
+            }));
+
+        return candidates;
     }
 
     parseMentionPaths(input: string): string[] {
