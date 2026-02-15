@@ -4,6 +4,7 @@ import { CitationCoverageReport, CitationQualityService } from '../services/Cita
 import { ContextResolver } from '../services/ContextResolver';
 import { OpenCodeServer } from '../services/OpenCodeServer';
 import { PublishAssistantService } from '../services/PublishAssistantService';
+import { KnowledgeBaseService } from '../services/KnowledgeBaseService';
 import { SessionManager } from '../services/SessionManager';
 import { WritingWorkflowService } from '../services/WritingWorkflowService';
 import { ChatInput } from '../ui/ChatInput';
@@ -62,6 +63,7 @@ export class OpenCodeChatView extends ItemView {
     private readonly writingWorkflow: WritingWorkflowService;
     private readonly citationQualityService: CitationQualityService;
     private readonly publishAssistant: PublishAssistantService;
+    private readonly knowledgeBaseService: KnowledgeBaseService;
     private readonly pendingMetaByServerSessionId: Map<string, WorkflowExecutionMeta> = new Map();
     private readonly citationReportBySessionId: Map<string, CitationCoverageReport> = new Map();
 
@@ -89,6 +91,7 @@ export class OpenCodeChatView extends ItemView {
         this.writingWorkflow = new WritingWorkflowService();
         this.citationQualityService = new CitationQualityService();
         this.publishAssistant = new PublishAssistantService(plugin.app);
+        this.knowledgeBaseService = new KnowledgeBaseService(plugin.app);
 
         this.boundHandlers = {
             onTextDelta: this.handleTextDelta.bind(this),
@@ -641,7 +644,7 @@ export class OpenCodeChatView extends ItemView {
         return lines.join('\n');
     }
 
-    private prepareWorkflowCommand(rawCommand: string): PreparedWorkflowCommand {
+    private async prepareWorkflowCommand(rawCommand: string): Promise<PreparedWorkflowCommand> {
         const command = rawCommand.trim();
 
         if (/^\/help(?:\s+workflow)?$/i.test(command)) {
@@ -661,7 +664,7 @@ export class OpenCodeChatView extends ItemView {
         }
 
         if (/^\/kb\s+audit\b/i.test(command)) {
-            return this.prepareKbAuditCommand(command);
+            return await this.prepareKbAuditCommand(command);
         }
 
         if (/^\/qa\b/i.test(command)) {
@@ -819,7 +822,7 @@ export class OpenCodeChatView extends ItemView {
         };
     }
 
-    private prepareKbAuditCommand(command: string): PreparedWorkflowCommand {
+    private async prepareKbAuditCommand(command: string): Promise<PreparedWorkflowCommand> {
         const match = command.match(/^\/kb\s+audit(?:\s+([^\s]+))?(?:\s+([\s\S]+))?$/i);
         if (!match) {
             return {
@@ -846,14 +849,17 @@ export class OpenCodeChatView extends ItemView {
             userRequest = [firstToken, remaining].filter((part) => part.length > 0).join(' ').trim();
         }
 
+        const report = await this.knowledgeBaseService.runAudit();
+        const reportMarkdown = this.knowledgeBaseService.formatReport(report);
+
         const contextSnapshot = this.contextResolver.resolveSnapshot(command);
         const contextBlock = this.contextResolver.buildContextBlock(contextSnapshot);
-        const promptToSend = this.writingWorkflow.buildKbAuditPrompt(scope, userRequest, contextBlock);
+        const promptToSend = this.writingWorkflow.buildKbAuditPrompt(scope, userRequest, contextBlock, reportMarkdown);
 
         return {
             displayCommand: command,
             promptToSend,
-            localNotice: `Knowledge base audit scope: **${scope}**`,
+            localNotice: `Knowledge base audit scope: **${scope}** (Found ${report.issues.length} issues)`,
             meta: {
                 source: 'kb',
                 requiresCitationCheck: false,
@@ -876,7 +882,7 @@ export class OpenCodeChatView extends ItemView {
             };
         }
 
-        const contextSnapshot = this.contextResolver.resolveSnapshot(command);
+        const contextSnapshot = this.contextResolver.resolveSnapshot(command, question);
         const contextBlock = this.contextResolver.buildContextBlock(contextSnapshot);
         const promptToSend = this.writingWorkflow.buildEvidencePrompt(question, contextBlock);
 
@@ -894,7 +900,7 @@ export class OpenCodeChatView extends ItemView {
     async handleCommand(command: string) {
         if (this.isProcessing) return;
 
-        const preparedCommand = this.prepareWorkflowCommand(command);
+        const preparedCommand = await this.prepareWorkflowCommand(command);
         if (!preparedCommand.promptToSend) {
             if (preparedCommand.localNotice) {
                 this.addSystemNotice(preparedCommand.localNotice);
