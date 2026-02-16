@@ -6,6 +6,12 @@ import { PermissionDialog } from './PermissionDialog';
 import { QuestionDialog } from './QuestionDialog';
 import { FileDiffView } from './FileDiffView';
 
+interface TextSegment {
+    el: HTMLElement;
+    buffer: string;
+    rendered?: boolean;
+}
+
 export class MessageContainer {
     private containerEl: HTMLElement;
     private messagesEl: HTMLElement;
@@ -13,7 +19,10 @@ export class MessageContainer {
     private currentMessageBuffer: string = '';
     private currentCursorEl: HTMLElement | null = null;
     private currentMessageEl: HTMLElement | null = null;
-    private currentActivitiesEl: HTMLElement | null = null;
+    /** Flow container for interleaved text segments and activity cards */
+    private currentFlowEl: HTMLElement | null = null;
+    /** Sealed text segments that have been interrupted by an activity */
+    private sealedTextSegments: TextSegment[] = [];
     private scrollLocked: boolean = false;
     private scrollBottomButton: HTMLElement | null = null;
     private messages: ChatMessage[] = []; // Store all messages for export
@@ -24,6 +33,7 @@ export class MessageContainer {
     private activeDiffHostEl: HTMLElement | null = null;
     private permissionDialogs: Map<string, PermissionDialog> = new Map();
     private questionDialogs: Map<string, QuestionDialog> = new Map();
+    private lastRenderTime = 0;
 
     constructor(containerEl: HTMLElement, private app: App) {
         this.containerEl = containerEl;
@@ -518,64 +528,94 @@ export class MessageContainer {
         this.currentMessageEl = messageEl;
         this.fileDiffViews.clear();
         this.activeDiffHostEl = null;
+        this.sealedTextSegments = [];
 
-        const activitiesEl = messageEl.createEl('div', {
-            cls: 'claude-chat-message-activities',
+        // Flow container: text segments and activity cards are appended chronologically
+        const flowEl = messageEl.createEl('div', {
+            cls: 'claude-chat-message-flow',
         });
-        this.currentActivitiesEl = activitiesEl;
+        this.currentFlowEl = flowEl;
 
-        const contentEl = messageEl.createEl('div', {
-            cls: 'claude-chat-message-content',
-        });
-
-        const textEl = contentEl.createEl('div', {
-            cls: 'claude-chat-message-text',
-        });
-
-        this.addThinkingIndicator(textEl);
+        const textSegmentEl = this.createTextSegmentEl(flowEl);
+        this.addThinkingIndicator(textSegmentEl);
 
         const timestampEl = messageEl.createEl('div', {
             cls: 'claude-chat-message-timestamp',
         });
-
         timestampEl.textContent = this.formatTime(new Date());
 
-        this.currentMessageTextEl = textEl;
+        this.currentMessageTextEl = textSegmentEl;
         this.currentMessageBuffer = '';
         this.scrollToBottom();
 
+        return textSegmentEl;
+    }
+
+    private createTextSegmentEl(parentEl: HTMLElement): HTMLElement {
+        const contentEl = parentEl.createEl('div', {
+            cls: 'claude-chat-message-content',
+        });
+        const textEl = contentEl.createEl('div', {
+            cls: 'claude-chat-message-text',
+        });
         return textEl;
     }
 
+    private sealCurrentTextSegment(): void {
+        if (!this.currentMessageTextEl || !this.currentMessageBuffer) return;
+
+        this.removeTypingCursor();
+
+        const activeFile = this.app.workspace.getActiveFile();
+        const sourcePath = activeFile?.path || '';
+
+        this.currentMessageTextEl.empty();
+        MarkdownRenderer.renderMarkdown(
+            this.currentMessageBuffer,
+            this.currentMessageTextEl,
+            sourcePath,
+            new Component()
+        );
+        this.enhanceInlineReferences(this.currentMessageTextEl);
+        this.addCopyButtonsToCodeBlocks(this.currentMessageTextEl);
+
+        this.sealedTextSegments.push({
+            el: this.currentMessageTextEl,
+            buffer: this.currentMessageBuffer,
+            rendered: true,
+        });
+        this.currentMessageTextEl = null;
+        this.currentMessageBuffer = '';
+    }
+
+    private ensureCurrentTextSegment(): void {
+        if (this.currentMessageTextEl) return;
+        if (!this.currentFlowEl) return;
+
+        const textEl = this.createTextSegmentEl(this.currentFlowEl);
+        this.currentMessageTextEl = textEl;
+        this.currentMessageBuffer = '';
+    }
+
+    private getFlowTargetEl(): HTMLElement {
+        return this.currentFlowEl || this.currentMessageEl || this.messagesEl;
+    }
+
     appendToAssistantMessage(text: string) {
+        this.ensureCurrentTextSegment();
+
         if (this.currentMessageTextEl) {
             // Remove thinking indicator on first append
             this.removeThinkingIndicator();
 
             this.currentMessageBuffer += text;
-            // Show raw text during streaming for performance
-            this.currentMessageTextEl.textContent = this.currentMessageBuffer;
 
-            // Add typing cursor
-            this.addTypingCursor();
-
-            this.scrollToBottom();
-        }
-    }
-
-    finalizeAssistantMessage() {
-        if (this.currentMessageTextEl) {
-            // Remove typing cursor
-            this.removeTypingCursor();
-
-            // Render markdown on completion
-            if (this.currentMessageBuffer) {
-                if (!this.currentMessageBuffer.endsWith('\n')) {
-                    this.currentMessageBuffer += '\n';
-                }
-                this.currentMessageTextEl.empty();
+            const now = Date.now();
+            if (now - this.lastRenderTime > 50) {
                 const activeFile = this.app.workspace.getActiveFile();
                 const sourcePath = activeFile?.path || '';
+
+                this.currentMessageTextEl.empty();
                 MarkdownRenderer.renderMarkdown(
                     this.currentMessageBuffer,
                     this.currentMessageTextEl,
@@ -583,27 +623,77 @@ export class MessageContainer {
                     new Component()
                 );
 
-                this.enhanceInlineReferences(this.currentMessageTextEl);
-
-                // Add copy buttons to code blocks
-                this.addCopyButtonsToCodeBlocks(this.currentMessageTextEl);
-
-                // Store assistant message for export
-                this.messages.push({
-                    role: 'assistant',
-                    content: this.currentMessageBuffer,
-                    timestamp: new Date(),
-                });
+                // Add typing cursor
+                this.addTypingCursor();
+                this.lastRenderTime = now;
             }
+
+            this.scrollToBottom();
         }
-        // Add copy button for the entire assistant message (on messageEl to avoid overflow: hidden clip)
+    }
+
+    finalizeAssistantMessage() {
+        this.removeTypingCursor();
+
+        const allSegments: TextSegment[] = [...this.sealedTextSegments];
+        if (this.currentMessageTextEl && this.currentMessageBuffer) {
+            allSegments.push({
+                el: this.currentMessageTextEl,
+                buffer: this.currentMessageBuffer,
+                rendered: false,
+            });
+        }
+
+        let fullContent = '';
+        const activeFile = this.app.workspace.getActiveFile();
+        const sourcePath = activeFile?.path || '';
+
+        for (const segment of allSegments) {
+            let buf = segment.buffer;
+            fullContent += buf;
+
+            if (!segment.rendered && !buf.trim()) {
+                segment.el.closest('.claude-chat-message-content')?.remove();
+                continue;
+            }
+
+            if (segment.rendered) {
+                continue;
+            }
+
+            if (!buf.endsWith('\n')) {
+                buf += '\n';
+            }
+
+            segment.el.empty();
+            MarkdownRenderer.renderMarkdown(
+                buf,
+                segment.el,
+                sourcePath,
+                new Component()
+            );
+
+            this.enhanceInlineReferences(segment.el);
+            this.addCopyButtonsToCodeBlocks(segment.el);
+        }
+
+        if (fullContent) {
+            this.messages.push({
+                role: 'assistant',
+                content: fullContent,
+                timestamp: new Date(),
+            });
+        }
+
         if (this.currentMessageEl) {
-            this.addMessageCopyButton(this.currentMessageEl, this.currentMessageBuffer);
+            this.addMessageCopyButton(this.currentMessageEl, fullContent);
         }
+
         this.currentMessageTextEl = null;
         this.currentMessageBuffer = '';
         this.currentMessageEl = null;
-        this.currentActivitiesEl = null;
+        this.currentFlowEl = null;
+        this.sealedTextSegments = [];
     }
 
     private addCopyButtonsToCodeBlocks(container: HTMLElement) {
@@ -751,7 +841,8 @@ export class MessageContainer {
             return existing;
         }
 
-        const targetEl = this.currentActivitiesEl || this.currentMessageEl || this.messagesEl;
+        this.sealCurrentTextSegment();
+        const targetEl = this.getFlowTargetEl();
         const view = new ToolCallView(targetEl, part);
         this.toolCallViews.set(part.id, view);
         this.scrollToBottom();
@@ -763,7 +854,8 @@ export class MessageContainer {
             return;
         }
 
-        const targetEl = this.currentActivitiesEl || this.currentMessageEl || this.messagesEl;
+        this.sealCurrentTextSegment();
+        const targetEl = this.getFlowTargetEl();
         const hostChanged = this.activeDiffHostEl !== targetEl;
         if (hostChanged) {
             this.fileDiffViews.clear();
@@ -789,7 +881,8 @@ export class MessageContainer {
         request: PermissionRequest,
         onReply: (response: PermissionResponse) => void
     ): PermissionDialog {
-        const targetEl = this.currentActivitiesEl || this.currentMessageEl || this.messagesEl;
+        this.sealCurrentTextSegment();
+        const targetEl = this.getFlowTargetEl();
         const dialog = new PermissionDialog(targetEl, request, onReply);
         this.permissionDialogs.set(request.id, dialog);
         this.scrollToBottom();
@@ -801,7 +894,8 @@ export class MessageContainer {
         onReply: (answers: string[][]) => void,
         onReject: () => void
     ): QuestionDialog {
-        const targetEl = this.currentActivitiesEl || this.currentMessageEl || this.messagesEl;
+        this.sealCurrentTextSegment();
+        const targetEl = this.getFlowTargetEl();
         const dialog = new QuestionDialog(targetEl, request, onReply, onReject);
         this.questionDialogs.set(request.id, dialog);
         this.scrollToBottom();
@@ -809,7 +903,8 @@ export class MessageContainer {
     }
 
     addStepIndicator(part: StepStartPart | StepFinishPart): void {
-        const targetEl = this.currentActivitiesEl || this.currentMessageEl || this.messagesEl;
+        this.sealCurrentTextSegment();
+        const targetEl = this.getFlowTargetEl();
 
         if (part.type === 'step-start') {
             const el = targetEl.createEl('div', { cls: 'claude-step-indicator claude-step-start' });
@@ -859,7 +954,8 @@ export class MessageContainer {
         this.messages = [];
         this.currentMessageTextEl = null;
         this.currentMessageBuffer = '';
-        this.currentActivitiesEl = null;
+        this.currentFlowEl = null;
+        this.sealedTextSegments = [];
         this.scrollLocked = false;
         this.hideScrollBottomButton();
     }

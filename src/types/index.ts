@@ -1,6 +1,7 @@
 import type { WritingTask } from './writing';
 
 export const OPENCODE_CHAT_VIEW_TYPE = 'claude-chat-view';
+export const WECHAT_EXPORT_PREVIEW_VIEW_TYPE = 'wechat-export-preview-view';
 
 export interface ChatMessage {
     role: 'user' | 'assistant' | 'system';
@@ -9,8 +10,9 @@ export interface ChatMessage {
 }
 
 export interface OpenCodePluginSettings {
-    vaultPath?: string;
-    openCodeCommand?: string;
+    opencodeModel: string;
+    ohMyOpencodeModel: string;
+    enableOhMyOpencode: boolean;
 }
 
 /**

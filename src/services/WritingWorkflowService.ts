@@ -341,6 +341,11 @@ export class WritingWorkflowService {
             '## Output Contract',
             descriptor.outputContract,
             '',
+            '## Stage Completion Protocol',
+            'When you have fully satisfied the goal of this stage, you MUST end your response with a specific tag:',
+            `<stage_completed>${stage}</stage_completed>`,
+            'Do NOT include this tag if the work is partial or you have follow-up questions.',
+            '',
             '## Missing Evidence Policy',
             '- If evidence is insufficient, provide the safest partial answer and list what to retrieve next.',
             `- Mention unresolved @ references if any: ${context.missingMentionPaths.join(', ') || '(none)'}`,
@@ -358,6 +363,37 @@ export class WritingWorkflowService {
         if (publishContextBlock) {
             lines.push('');
             lines.push(publishContextBlock);
+        }
+
+        const isWeChat = /wechat|微信|公众号|public account/i.test(safeRequest);
+        if (stage === 'publish' && isWeChat) {
+            lines.push('');
+            lines.push('## 🟢 WECHAT/PUBLIC ACCOUNT MODE ACTIVATED');
+            lines.push('The user wants to publish this to a WeChat Official Account. You MUST override the standard Output Contract with these specific rules:');
+            lines.push('');
+            lines.push('1. **NO YAML Frontmatter**: Do not include `---` metadata headers.');
+            lines.push('2. **Link Handling**: WeChat articles cannot have external links in the body.');
+            lines.push('   - Convert ALL external links `[text](url)` into inline text with a reference number `text [^1]`.');
+            lines.push('   - Add a "References" (参考文献) section at the very bottom listing the URLs.');
+            lines.push('3. **Formatting & Layout**:');
+            lines.push('   - Use **short paragraphs** (1-3 sentences max) for mobile readability.');
+            lines.push('   - Use **bolding** for key insights freely.');
+            lines.push('   - Use `---` or visual separators between sections.');
+            lines.push('   - Remove `[[WikiLinks]]` and replace with plain text (unless it is a logical emphasis).');
+            lines.push('4. **Tone**: Engaging, conversational, yet professional.');
+            lines.push('5. **Structure**:');
+            lines.push('   - **Catchy Title**: Suggest 3 viral/engaging title options at the top.');
+            lines.push('   - **Lead-in**: A hook summary at the start.');
+            lines.push('   - **Body**: The main content formatted as requested.');
+            lines.push('   - **CTA**: A "Call to Action" or conclusion inviting comments/follows.');
+            lines.push('');
+            lines.push('## 📦 FINAL OUTPUT FORMAT - CRITICAL');
+            lines.push('You MUST wrap the final article content inside XML tags exactly like this:');
+            lines.push('<final_article>');
+            lines.push('(The full article content goes here)');
+            lines.push('</final_article>');
+            lines.push('Do NOT put the article inside a markdown code block (```). Output raw text inside the tags.');
+            lines.push('Do NOT include any conversation text outside the tags.');
         }
 
         return lines.join('\n');

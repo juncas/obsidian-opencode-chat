@@ -24,14 +24,16 @@ export class WritingTaskPanel {
     private headerEl: HTMLElement;
     private titleEl: HTMLElement;
     private statusEl: HTMLElement;
+    private toggleBtn: HTMLElement;
     private bodyEl: HTMLElement;
+    private stagesEl: HTMLElement; // Workflow stepper (always visible)
+    private detailsEl: HTMLElement; // Collapsible container
     private objectiveEl: HTMLElement;
     private metadataEl: HTMLElement;
-    private stagesEl: HTMLElement;
-    private stageHistoryEl: HTMLElement;
     private versionsEl: HTMLElement;
     private metricsEl: HTMLElement;
     private emptyEl: HTMLElement;
+    private isDetailsOpen: boolean = false;
 
     constructor(
         parentEl: HTMLElement,
@@ -53,82 +55,97 @@ export class WritingTaskPanel {
         this.headerEl = this.panelEl.createEl('div', {
             cls: 'claude-writing-task-header',
         });
-        this.titleEl = this.headerEl.createEl('div', {
+
+        const headerLeft = this.headerEl.createEl('div', { cls: 'claude-writing-header-left' });
+        this.titleEl = headerLeft.createEl('div', {
             cls: 'claude-writing-task-title',
             text: 'Writing Agent',
         });
-        this.statusEl = this.headerEl.createEl('span', {
+        this.statusEl = headerLeft.createEl('span', {
             cls: 'claude-writing-task-status',
         });
 
+        this.toggleBtn = this.headerEl.createEl('div', {
+            cls: 'claude-writing-task-toggle',
+            attr: { 'aria-label': 'Toggle details' }
+        });
+        this.renderToggleIcon();
+        this.toggleBtn.addEventListener('click', () => this.toggleDetails());
+
         this.bodyEl = this.panelEl.createEl('div', {
             cls: 'claude-writing-task-body',
-        });
-
-        this.objectiveEl = this.bodyEl.createEl('div', {
-            cls: 'claude-writing-task-objective',
-        });
-
-        this.metadataEl = this.bodyEl.createEl('div', {
-            cls: 'claude-writing-task-metadata',
         });
 
         this.stagesEl = this.bodyEl.createEl('div', {
             cls: 'claude-writing-task-stages',
         });
 
-        this.stageHistoryEl = this.bodyEl.createEl('div', {
-            cls: 'claude-writing-task-stage-history',
+        this.detailsEl = this.bodyEl.createEl('div', {
+            cls: 'claude-writing-task-details',
+        });
+        this.detailsEl.style.display = 'none';
+
+        this.objectiveEl = this.detailsEl.createEl('div', {
+            cls: 'claude-writing-task-objective',
         });
 
-        this.metricsEl = this.bodyEl.createEl('div', {
+        this.metadataEl = this.detailsEl.createEl('div', {
+            cls: 'claude-writing-task-metadata',
+        });
+
+        this.metricsEl = this.detailsEl.createEl('div', {
             cls: 'claude-writing-task-metrics',
         });
 
-        this.versionsEl = this.bodyEl.createEl('div', {
+        this.versionsEl = this.detailsEl.createEl('div', {
             cls: 'claude-writing-task-versions',
         });
 
         this.emptyEl = this.panelEl.createEl('div', {
             cls: 'claude-writing-task-empty',
         });
+        const emptyInner = this.emptyEl.createEl('div', { cls: 'claude-writing-empty-inner' });
+        emptyInner.createEl('span', { text: 'No active writing task.' });
+        const startBtn = emptyInner.createEl('button', { text: 'Start New Task' });
+        startBtn.addEventListener('click', () => this.callbacks.onStartTask());
+    }
 
-        const emptyTitle = this.emptyEl.createEl('div', {
-            cls: 'claude-writing-task-empty-title',
-            text: 'No active writing task',
-        });
-        emptyTitle.setAttribute('aria-hidden', 'true');
+    private toggleDetails() {
+        this.isDetailsOpen = !this.isDetailsOpen;
+        this.detailsEl.style.display = this.isDetailsOpen ? 'block' : 'none';
+        this.renderToggleIcon();
+    }
 
-        this.emptyEl.createEl('div', {
-            cls: 'claude-writing-task-empty-text',
-            text: 'Start with `/write start <topic>` to create a structured writing workflow.',
-        });
-
-        const startButton = this.emptyEl.createEl('button', {
-            cls: 'claude-writing-task-empty-action',
-            text: 'Start Task',
-        });
-        startButton.addEventListener('click', () => this.callbacks.onStartTask());
+    private renderToggleIcon() {
+        this.toggleBtn.empty();
+        if (this.isDetailsOpen) {
+            this.toggleBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="18 15 12 9 6 15"></polyline></svg>`;
+        } else {
+            this.toggleBtn.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>`;
+        }
     }
 
     update(task: WritingTask | null, report: CitationCoverageReport | null): void {
         if (!task) {
             this.panelEl.classList.add('is-empty');
-            this.statusEl.setText('Idle');
-            this.titleEl.setText('Writing Agent');
             this.bodyEl.style.display = 'none';
             this.emptyEl.style.display = 'block';
+            this.headerEl.style.display = 'none';
             return;
         }
 
         this.panelEl.classList.remove('is-empty');
         this.bodyEl.style.display = 'block';
         this.emptyEl.style.display = 'none';
+        this.headerEl.style.display = 'flex';
 
         this.titleEl.setText(task.title);
-        this.statusEl.setText(`${task.status} · ${STAGE_LABELS[task.stage]}`);
+        this.statusEl.setText(task.status);
+        this.statusEl.className = 'claude-writing-task-status';
         this.statusEl.classList.toggle('is-paused', task.status === 'paused');
         this.statusEl.classList.toggle('is-completed', task.status === 'completed');
+
+        this.renderWorkflowStepper(task.stage);
 
         this.objectiveEl.empty();
         this.objectiveEl.createEl('div', {
@@ -141,14 +158,63 @@ export class WritingTaskPanel {
         });
 
         this.metadataEl.empty();
+        this.metadataEl.addClass('claude-writing-metadata-row');
         this.renderInlineEditField(this.metadataEl, 'Audience', 'audience', task.audience);
         this.renderInlineEditField(this.metadataEl, 'Tone', 'tone', task.tone);
         this.renderInlineEditField(this.metadataEl, 'Length', 'targetLength', task.targetLength);
 
-        this.renderStageButtons(task.stage);
-        this.renderStageHistory(task.stageHistory || []);
-        this.renderDraftVersions(task);
         this.renderMetrics(report);
+        this.renderDraftVersions(task);
+    }
+
+    private renderWorkflowStepper(currentStage: WritingStage): void {
+        const container = this.stagesEl; // Reuse stagesEl container for stepper
+        container.empty();
+        
+        const stepper = container.createEl('div', {
+            cls: 'claude-workflow-stepper',
+        });
+
+        const currentIndex = STAGE_ORDER.indexOf(currentStage);
+
+        STAGE_ORDER.forEach((stage, index) => {
+            const node = stepper.createEl('div', {
+                cls: 'claude-workflow-node',
+            });
+            
+            // State classes
+            if (index < currentIndex) {
+                node.addClass('is-completed');
+            } else if (index === currentIndex) {
+                node.addClass('is-active');
+            } else {
+                node.addClass('is-pending');
+            }
+
+            // Clickable (except maybe future ones? No, let's allow jumping)
+            node.addEventListener('click', () => this.callbacks.onRunStage(stage));
+            node.setAttribute('title', `Run ${STAGE_LABELS[stage]}`);
+
+            // Icon/Dot
+            const dot = node.createEl('div', { cls: 'claude-workflow-dot' });
+            if (index < currentIndex) {
+                dot.innerHTML = `<svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"><polyline points="20 6 9 17 4 12"></polyline></svg>`;
+            }
+
+            // Label
+            node.createEl('span', {
+                cls: 'claude-workflow-label',
+                text: STAGE_LABELS[stage],
+            });
+            
+            // Connecting line (except for last item)
+            if (index < STAGE_ORDER.length - 1) {
+                const line = stepper.createEl('div', { cls: 'claude-workflow-line' });
+                if (index < currentIndex) {
+                    line.addClass('is-completed');
+                }
+            }
+        });
     }
 
     destroy(): void {
@@ -210,85 +276,7 @@ export class WritingTaskPanel {
         });
     }
 
-    private renderStageHistory(history: StageTransition[]): void {
-        this.stageHistoryEl.empty();
 
-        if (history.length === 0) {
-            return;
-        }
-
-        this.stageHistoryEl.createEl('div', {
-            cls: 'claude-writing-task-label',
-            text: 'Stage History',
-        });
-
-        const listEl = this.stageHistoryEl.createEl('div', {
-            cls: 'claude-writing-stage-history-list',
-        });
-
-        const recent = history.slice(-5).reverse();
-        for (const transition of recent) {
-            const itemEl = listEl.createEl('div', {
-                cls: 'claude-writing-stage-history-item',
-            });
-            itemEl.createEl('span', {
-                cls: 'claude-writing-stage-history-from',
-                text: STAGE_LABELS[transition.from],
-            });
-            itemEl.createEl('span', {
-                cls: 'claude-writing-stage-history-arrow',
-                text: '\u2192',
-            });
-            itemEl.createEl('span', {
-                cls: 'claude-writing-stage-history-to',
-                text: STAGE_LABELS[transition.to],
-            });
-            itemEl.createEl('span', {
-                cls: 'claude-writing-stage-history-time',
-                text: this.formatTime(transition.timestamp),
-            });
-        }
-    }
-
-    private renderStageButtons(activeStage: WritingStage): void {
-        this.stagesEl.empty();
-        const actionsEl = this.stagesEl.createEl('div', {
-            cls: 'claude-writing-stage-actions',
-        });
-
-        for (const stage of STAGE_ORDER) {
-            const button = actionsEl.createEl('button', {
-                cls: 'claude-writing-stage-button',
-                text: STAGE_LABELS[stage],
-            });
-            if (stage === activeStage) {
-                button.addClass('is-active');
-            }
-            button.addEventListener('click', () => this.callbacks.onRunStage(stage));
-        }
-
-        const stateActions = this.stagesEl.createEl('div', {
-            cls: 'claude-writing-state-actions',
-        });
-
-        const pauseButton = stateActions.createEl('button', {
-            cls: 'claude-writing-state-button',
-            text: 'Pause',
-        });
-        pauseButton.addEventListener('click', () => this.callbacks.onPauseTask());
-
-        const resumeButton = stateActions.createEl('button', {
-            cls: 'claude-writing-state-button',
-            text: 'Resume',
-        });
-        resumeButton.addEventListener('click', () => this.callbacks.onResumeTask());
-
-        const completeButton = stateActions.createEl('button', {
-            cls: 'claude-writing-state-button is-primary',
-            text: 'Complete',
-        });
-        completeButton.addEventListener('click', () => this.callbacks.onCompleteTask());
-    }
 
     private renderMetrics(report: CitationCoverageReport | null): void {
         this.metricsEl.empty();

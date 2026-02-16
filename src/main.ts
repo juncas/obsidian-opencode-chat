@@ -1,10 +1,18 @@
-import { Plugin, WorkspaceLeaf } from 'obsidian';
+import { Plugin, WorkspaceLeaf, Notice, TFile } from 'obsidian';
 import { copyFileSync, existsSync, mkdirSync, readdirSync } from 'fs';
 import { join } from 'path';
 import { OpenCodeChatView } from './views/OpenCodeChatView';
-import { OPENCODE_CHAT_VIEW_TYPE, OpenCodePluginData, Session } from './types';
+import { WeChatPreviewView } from './views/WeChatPreviewView';
+import { OPENCODE_CHAT_VIEW_TYPE, WECHAT_EXPORT_PREVIEW_VIEW_TYPE, OpenCodePluginData, Session, OpenCodePluginSettings } from './types';
 import { SessionManager } from './services/SessionManager';
 import { OpenCodeServer } from './services/OpenCodeServer';
+import { SettingsTab } from './ui/SettingsTab';
+
+const DEFAULT_SETTINGS: OpenCodePluginSettings = {
+    opencodeModel: '',
+    ohMyOpencodeModel: '',
+    enableOhMyOpencode: true,
+};
 
 export default class OpenCodeChatPlugin extends Plugin {
     data: OpenCodePluginData = {
@@ -14,35 +22,47 @@ export default class OpenCodeChatPlugin extends Plugin {
         currentSessionId: null,
     };
 
+    settings: OpenCodePluginSettings = DEFAULT_SETTINGS;
     sessionManager: SessionManager = new SessionManager();
     server: OpenCodeServer | null = null;
 
     async onload() {
-        // Load persisted data
         await this.loadPluginData();
+        await this.loadSettings();
 
-        // Sync bundled OpenCode skills into vault-level .opencode/skills
-        // so the agent can discover them without manual copy.
         this.syncBundledSkillsToVault();
 
-        // Start OpenCode HTTP server (non-blocking)
         const vaultPath = this.getVaultPath();
         this.server = OpenCodeServer.getInstance(vaultPath);
+        
+        this.server.setModels(this.settings.opencodeModel, this.settings.ohMyOpencodeModel, this.settings.enableOhMyOpencode);
+
         this.server.start().then(() => {
             console.log('OpenCodeChat: Server started on port', this.server?.serverPort);
         }).catch((e) => {
             console.error('OpenCodeChat: Failed to start OpenCode server:', e);
         });
 
-        // Register the view type
+        this.addSettingTab(new SettingsTab(this.app, this));
+
         this.registerView(
             OPENCODE_CHAT_VIEW_TYPE,
             (leaf) => new OpenCodeChatView(leaf, this)
         );
 
+        this.registerView(
+            WECHAT_EXPORT_PREVIEW_VIEW_TYPE,
+            (leaf) => new WeChatPreviewView(leaf)
+        );
+
         // Add ribbon icon to toggle the view
         this.addRibbonIcon('message-square', 'Open OpenCode Chat', () => {
             this.activateView();
+        });
+
+        // Add ribbon icon for WeChat export preview
+        this.addRibbonIcon('file-output', 'Open WeChat Export Preview', () => {
+            this.activateWeChatPreview();
         });
 
         // Add command to open the chat
@@ -91,6 +111,43 @@ export default class OpenCodeChatPlugin extends Plugin {
             hotkeys: [{ modifiers: ['Mod', 'Shift'], key: 'e' }],
             callback: () => this.exportConversation(),
         });
+
+        // Add command to open WeChat export preview
+        this.addCommand({
+            id: 'wechat-export-preview',
+            name: 'Open WeChat Export Preview',
+            callback: () => this.activateWeChatPreview(),
+        });
+
+        // Add file menu action for WeChat export preview
+        this.registerEvent(
+            this.app.workspace.on('file-menu', (menu, file: TFile) => {
+                if (file.extension === 'md') {
+                    menu.addItem((item) => {
+                        item
+                            .setTitle('WeChat Export Preview')
+                            .setIcon('file-output')
+                            .onClick(() => this.openWeChatPreviewForFile(file));
+                    });
+                }
+            })
+        );
+    }
+
+    async loadSettings() {
+        this.settings = Object.assign({}, DEFAULT_SETTINGS, await this.loadData());
+    }
+
+    async saveSettings() {
+        await this.saveData(this.settings);
+    }
+
+    async reloadServer(): Promise<void> {
+        if (!this.server) {
+            return;
+        }
+        this.server.setModels(this.settings.opencodeModel, this.settings.ohMyOpencodeModel, this.settings.enableOhMyOpencode);
+        await this.server.restart();
     }
 
     async activateView() {
@@ -109,6 +166,60 @@ export default class OpenCodeChatPlugin extends Plugin {
                 type: OPENCODE_CHAT_VIEW_TYPE,
                 active: true,
             });
+            }
+        }
+    }
+
+    async activateWeChatPreview() {
+        const { workspace } = this.app;
+        const activeFile = workspace.getActiveFile();
+
+        if (!activeFile) {
+            new Notice('No active file to preview');
+            return;
+        }
+
+        // Check if view already exists
+        let existingLeaf = workspace.getLeavesOfType(WECHAT_EXPORT_PREVIEW_VIEW_TYPE)[0];
+
+        if (existingLeaf) {
+            workspace.revealLeaf(existingLeaf);
+            const view = existingLeaf.view as WeChatPreviewView;
+            await view.setFile(activeFile);
+        } else {
+            // Create new leaf in right sidebar
+            const leaf = workspace.getRightLeaf(false);
+            if (leaf) {
+                await leaf.setViewState({
+                    type: WECHAT_EXPORT_PREVIEW_VIEW_TYPE,
+                    active: true,
+                });
+                const view = leaf.view as WeChatPreviewView;
+                await view.setFile(activeFile);
+            }
+        }
+    }
+
+    async openWeChatPreviewForFile(file: TFile) {
+        const { workspace } = this.app;
+
+        // Check if view already exists
+        let existingLeaf = workspace.getLeavesOfType(WECHAT_EXPORT_PREVIEW_VIEW_TYPE)[0];
+
+        if (existingLeaf) {
+            workspace.revealLeaf(existingLeaf);
+            const view = existingLeaf.view as WeChatPreviewView;
+            await view.setFile(file);
+        } else {
+            // Create new leaf in right sidebar
+            const leaf = workspace.getRightLeaf(false);
+            if (leaf) {
+                await leaf.setViewState({
+                    type: WECHAT_EXPORT_PREVIEW_VIEW_TYPE,
+                    active: true,
+                });
+                const view = leaf.view as WeChatPreviewView;
+                await view.setFile(file);
             }
         }
     }

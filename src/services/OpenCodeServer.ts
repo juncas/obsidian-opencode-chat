@@ -1,4 +1,6 @@
 import { spawn } from 'child_process';
+import * as fs from 'fs';
+import * as path from 'path';
 import { request as httpRequest } from 'http';
 import { requestUrl } from 'obsidian';
 import type {
@@ -70,6 +72,9 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
     private textAccumulator: Map<string, string> = new Map();
     private messageRoles: Map<string, string> = new Map();
     private stopping: boolean = false;
+    private opencodeModel: string = '';
+    private ohMyOpencodeModel: string = '';
+    private enableOhMyOpencode: boolean = true;
 
     private constructor(vaultPath: string) {
         super();
@@ -81,6 +86,50 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
             OpenCodeServer.instance = new OpenCodeServer(vaultPath);
         }
         return OpenCodeServer.instance;
+    }
+
+    setModels(opencodeModel: string, ohMyOpencodeModel: string, enableOhMyOpencode: boolean) {
+        this.opencodeModel = opencodeModel;
+        this.ohMyOpencodeModel = ohMyOpencodeModel;
+        this.enableOhMyOpencode = enableOhMyOpencode;
+    }
+
+    async listModels(): Promise<string[]> {
+        return new Promise((resolve, reject) => {
+            const processHandle = spawn('opencode', ['models'], {
+                env: {
+                    ...process.env,
+                    PATH: this.buildAugmentedPath(),
+                },
+                windowsHide: true,
+            });
+
+            let stdout = '';
+            let stderr = '';
+
+            processHandle.stdout?.on('data', (data) => {
+                stdout += data.toString();
+            });
+
+            processHandle.stderr?.on('data', (data) => {
+                stderr += data.toString();
+            });
+
+            processHandle.on('close', (code) => {
+                if (code === 0) {
+                    const models = stdout.split('\n')
+                        .map(line => line.trim())
+                        .filter(line => line.length > 0);
+                    resolve(models);
+                } else {
+                    reject(new Error(`Failed to list models: ${stderr || 'Unknown error'}`));
+                }
+            });
+
+            processHandle.on('error', (err) => {
+                reject(err);
+            });
+        });
     }
 
     get connected(): boolean {
@@ -98,7 +147,7 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
 
         this.stopping = false;
         let lastError: Error | null = null;
-        const maxAttempts = 3;
+        const maxAttempts = 5;
 
         for (let attempt = 0; attempt < maxAttempts; attempt += 1) {
             const port = 14000 + attempt;
@@ -122,6 +171,52 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
         throw new Error('Failed to start OpenCode server');
     }
 
+    async restart(): Promise<void> {
+        console.log('OpenCodeServer: Restarting service...');
+        
+        this.stopping = true;
+        
+        if (this.reconnectTimer) {
+            clearTimeout(this.reconnectTimer);
+            this.reconnectTimer = null;
+        }
+        
+        if (this.sseRequest) {
+            this.sseRequest.destroy();
+            this.sseRequest = null;
+        }
+        
+        this.sseBuffer = '';
+        this.textAccumulator.clear();
+        this.messageRoles.clear();
+        this.isConnected = false;
+        
+        if (this.serverProcess) {
+            try {
+                this.serverProcess.kill('SIGTERM');
+            } catch (e) {
+            }
+            
+            await new Promise((resolve) => setTimeout(resolve, 500));
+            
+            try {
+                this.serverProcess.kill('SIGKILL');
+            } catch (e) {
+            }
+            this.serverProcess = null;
+        }
+        
+        this.port = 0;
+        this.baseUrl = '';
+        this.reconnectAttempts = 0;
+        this.stopping = false;
+        
+        console.log('OpenCodeServer: Waiting for port release (3s)...');
+        await new Promise((resolve) => setTimeout(resolve, 3000));
+        
+        await this.start();
+    }
+
     async stop(): Promise<void> {
         this.stopping = true;
         this.disconnectSSE();
@@ -141,12 +236,23 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
 
         console.log(`OpenCodeServer: Starting on port ${port}, cwd: ${this.vaultPath}`);
 
+        const env: NodeJS.ProcessEnv = {
+            ...process.env,
+            PATH: this.buildAugmentedPath(),
+        };
+
+        if (this.opencodeModel) {
+            env.OPENCODE_MODEL = this.opencodeModel;
+        }
+        if (this.enableOhMyOpencode && this.ohMyOpencodeModel) {
+            env.OH_MY_OPENCODE_MODEL = this.ohMyOpencodeModel;
+        }
+
+        await this.writeLocalConfig();
+
         const processHandle = spawn('opencode', ['serve', '--port', String(port)], {
             cwd: this.vaultPath,
-            env: {
-                ...process.env,
-                PATH: this.buildAugmentedPath(),
-            },
+            env,
             stdio: ['ignore', 'pipe', 'pipe'],
             windowsHide: true,
         });
@@ -158,10 +264,12 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
 
         processHandle.stdout?.on('data', () => undefined);
 
+        let stderrBuffer = '';
         processHandle.stderr?.on('data', (data: string | Buffer) => {
             const message = data.toString().trim();
             if (message) {
                 console.error('OpenCodeServer: stderr:', message);
+                stderrBuffer += message + '\n';
             }
         });
 
@@ -170,7 +278,7 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
         });
 
         try {
-            await this.waitForServerReady(processHandle);
+            await this.waitForServerReady(processHandle, () => stderrBuffer);
         } catch (error) {
             await this.stop();
             throw error;
@@ -178,6 +286,27 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
 
         console.log(`OpenCodeServer: Server ready on port ${port}`);
         await this.connectSSE();
+    }
+
+    private async writeLocalConfig(): Promise<void> {
+        const opencodeDir = path.join(this.vaultPath, '.opencode');
+        const configPath = path.join(opencodeDir, 'opencode.json');
+
+        try {
+            if (!fs.existsSync(opencodeDir)) {
+                fs.mkdirSync(opencodeDir, { recursive: true });
+            }
+
+            const config: { plugin?: string[] } = {};
+
+            if (!this.enableOhMyOpencode) {
+                config.plugin = [];
+            }
+
+            fs.writeFileSync(configPath, JSON.stringify(config, null, 2));
+        } catch (e) {
+            console.error('OpenCodeServer: Failed to write local config:', e);
+        }
     }
 
     private buildAugmentedPath(): string {
@@ -190,13 +319,15 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
         return envPath;
     }
 
-    private async waitForServerReady(processHandle: ReturnType<typeof spawn>): Promise<void> {
+    private async waitForServerReady(processHandle: ReturnType<typeof spawn>, getStderr?: () => string): Promise<void> {
         const startTime = Date.now();
         const timeoutMs = 10_000;
         let exitError: Error | null = null;
 
         const handleExit = (code: number | null, signal: string | null) => {
-            exitError = new Error(`OpenCode server exited before ready (code: ${code ?? 'unknown'}, signal: ${signal ?? 'none'})`);
+            const stderrMsg = getStderr ? getStderr() : '';
+            const msg = stderrMsg ? ` (stderr: ${stderrMsg})` : '';
+            exitError = new Error(`OpenCode server exited before ready (code: ${code ?? 'unknown'}, signal: ${signal ?? 'none'})${msg}`);
         };
 
         const handleError = (error: Error) => {
@@ -238,7 +369,7 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
         this.disconnectSSE();
         this.sseBuffer = '';
 
-        await new Promise<void>((resolve, reject) => {
+        const connectPromise = new Promise<void>((resolve, reject) => {
             const request = httpRequest(
                 `${this.baseUrl}/event`,
                 {
@@ -299,6 +430,12 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
 
             request.end();
         });
+
+        const timeoutPromise = new Promise<void>((_, reject) => {
+            setTimeout(() => reject(new Error('SSE connection timeout')), 5000);
+        });
+
+        return Promise.race([connectPromise, timeoutPromise]);
     }
 
     private disconnectSSE(): void {
@@ -367,6 +504,8 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
     }
 
     private handleSseData(chunk: string): void {
+        if (this.stopping) return;
+        
         this.sseBuffer += chunk;
         const events = this.sseBuffer.split(/\r?\n\r?\n/);
         this.sseBuffer = events.pop() ?? '';
@@ -387,6 +526,8 @@ export class OpenCodeServer extends TypedEventEmitter<OpenCodeServerEvents> {
     }
 
     private handleSsePayload(payload: string): void {
+        if (this.stopping) return;
+        
         try {
             const event = JSON.parse(payload) as OpenCodeEvent;
             this.handleEvent(event);
