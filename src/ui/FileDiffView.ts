@@ -155,19 +155,19 @@ export class FileDiffView {
             return;
         }
 
-        rowEl.createEl('span', {
+        rowEl.createEl('div', {
             cls: 'claude-file-diff-line-number',
             text: row.beforeLineNumber !== null ? String(row.beforeLineNumber) : '',
         });
-        rowEl.createEl('span', {
+        rowEl.createEl('div', {
             cls: 'claude-file-diff-line-content',
             text: row.beforeText,
         });
-        rowEl.createEl('span', {
+        rowEl.createEl('div', {
             cls: 'claude-file-diff-line-number',
             text: row.afterLineNumber !== null ? String(row.afterLineNumber) : '',
         });
-        rowEl.createEl('span', {
+        rowEl.createEl('div', {
             cls: 'claude-file-diff-line-content',
             text: row.afterText,
         });

@@ -1,4 +1,4 @@
-import { ItemView, WorkspaceLeaf } from 'obsidian';
+import { ItemView, WorkspaceLeaf, Menu, Notice } from 'obsidian';
 import OpenCodeChatPlugin from '../main';
 import { CitationCoverageReport, CitationQualityService } from '../services/CitationQualityService';
 import { ContextResolver } from '../services/ContextResolver';
@@ -7,10 +7,12 @@ import { PublishAssistantService } from '../services/PublishAssistantService';
 import { KnowledgeBaseService } from '../services/KnowledgeBaseService';
 import { SessionManager } from '../services/SessionManager';
 import { WritingWorkflowService } from '../services/WritingWorkflowService';
+import { WeChatExporter } from '../services/WeChatExporter';
 import { ChatInput } from '../ui/ChatInput';
 import { MessageContainer } from '../ui/MessageContainer';
 import { SessionTabs } from '../ui/SessionTabs';
 import { WritingTaskPanel } from '../ui/WritingTaskPanel';
+import { WeChatStyleModal } from '../ui/WeChatStyleModal';
 import { OPENCODE_CHAT_VIEW_TYPE } from '../types';
 import type {
     PermissionRequest,
@@ -48,6 +50,8 @@ const STAGE_ALIAS: Record<string, WritingStage> = {
     publish: 'publish',
 };
 
+const STAGE_SEQUENCE: WritingStage[] = ['discover', 'outline', 'draft', 'evidence', 'polish', 'publish'];
+
 const AUDIT_SCOPES: AuditScope[] = ['full', 'broken', 'orphan', 'duplicate', 'stale'];
 
 export class OpenCodeChatView extends ItemView {
@@ -64,6 +68,7 @@ export class OpenCodeChatView extends ItemView {
     private readonly citationQualityService: CitationQualityService;
     private readonly publishAssistant: PublishAssistantService;
     private readonly knowledgeBaseService: KnowledgeBaseService;
+    private readonly weChatExporter: WeChatExporter;
     private readonly pendingMetaByServerSessionId: Map<string, WorkflowExecutionMeta> = new Map();
     private readonly citationReportBySessionId: Map<string, CitationCoverageReport> = new Map();
 
@@ -92,6 +97,7 @@ export class OpenCodeChatView extends ItemView {
         this.citationQualityService = new CitationQualityService();
         this.publishAssistant = new PublishAssistantService(plugin.app);
         this.knowledgeBaseService = new KnowledgeBaseService(plugin.app);
+        this.weChatExporter = new WeChatExporter(plugin.app);
 
         this.boundHandlers = {
             onTextDelta: this.handleTextDelta.bind(this),
@@ -198,14 +204,74 @@ export class OpenCodeChatView extends ItemView {
             cls: 'claude-chat-input-actions',
         });
 
-        this.createActionButton(inputActionsEl, 'Export', 'Export conversation to Markdown (Ctrl+Shift+E)', () => this.exportConversation());
-        this.createActionButton(inputActionsEl, 'Clear', 'Clear chat history (Ctrl+K)', () => this.clearHistory());
-        this.createActionButton(inputActionsEl, 'Regenerate', 'Regenerate last response', () => this.regenerateLast());
-        this.createActionButton(inputActionsEl, 'Write', 'Create a writing task template', () => this.queueCommandTemplate('/write start '));
-        this.createActionButton(inputActionsEl, 'Outline', 'Generate evidence-aware outline', () => this.queueCommandTemplate('/write outline '));
-        this.createActionButton(inputActionsEl, 'Draft', 'Generate first draft with citations', () => this.queueCommandTemplate('/write draft '));
-        this.createActionButton(inputActionsEl, 'Evidence', 'Run evidence review workflow', () => this.queueCommandTemplate('/write evidence '));
-        this.createActionButton(inputActionsEl, 'KB Audit', 'Run knowledge base health audit', () => this.queueCommandTemplate('/kb audit full '));
+        const workflowBtn = inputActionsEl.createEl('button', {
+            cls: 'claude-chat-action-button claude-workflow-menu-btn',
+            attr: { 'aria-label': 'Open workflow actions' }
+        });
+        workflowBtn.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M12 20h9"></path><path d="M16.5 3.5a2.121 2.121 0 0 1 3 3L7 19l-4 1 1-4L16.5 3.5z"></path></svg>
+            <span>Writing Workflows</span>
+            <svg xmlns="http://www.w3.org/2000/svg" width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="6 9 12 15 18 9"></polyline></svg>
+        `;
+        
+        workflowBtn.addEventListener('click', (event: MouseEvent) => {
+            const menu = new Menu();
+
+            menu.addItem((item) =>
+                item
+                    .setTitle('Start Writing Task')
+                    .setIcon('pen-tool')
+                    .onClick(() => this.queueCommandTemplate('/write start '))
+            );
+
+            menu.addItem((item) =>
+                item
+                    .setTitle('Generate Outline')
+                    .setIcon('list')
+                    .onClick(() => this.queueCommandTemplate('/write outline '))
+            );
+
+            menu.addItem((item) =>
+                item
+                    .setTitle('Draft Content')
+                    .setIcon('file-text')
+                    .onClick(() => this.queueCommandTemplate('/write draft '))
+            );
+
+            menu.addItem((item) =>
+                item
+                    .setTitle('Evidence Review')
+                    .setIcon('check-circle')
+                    .onClick(() => this.queueCommandTemplate('/write evidence '))
+            );
+            
+            menu.addSeparator();
+
+            menu.addItem((item) =>
+                item
+                    .setTitle('Export to WeChat HTML')
+                    .setIcon('share')
+                    .onClick(() => this.handleExportWeChat())
+            );
+
+            menu.addSeparator();
+
+            menu.addItem((item) =>
+                item
+                    .setTitle('Knowledge Base Audit')
+                    .setIcon('database')
+                    .onClick(() => this.queueCommandTemplate('/kb audit full '))
+            );
+            
+            menu.addItem((item) =>
+                item
+                    .setTitle('Ask QA')
+                    .setIcon('help-circle')
+                    .onClick(() => this.queueCommandTemplate('/qa '))
+            );
+
+            menu.showAtMouseEvent(event);
+        });
 
         this.chatInput = new ChatInput(
             contentEl,
@@ -298,6 +364,29 @@ export class OpenCodeChatView extends ItemView {
         if (lastMessage && lastMessage.role === 'assistant') {
             this.sessionManager.addMessage(lastMessage);
 
+            const completionMatch = lastMessage.content.match(/<stage_completed>([\w-]+)<\/stage_completed>/);
+            if (completionMatch) {
+                const completedStage = completionMatch[1] as WritingStage;
+                const currentTask = this.getCurrentWritingTask();
+
+                if (currentTask && currentTask.stage === completedStage) {
+                    const currentIndex = STAGE_SEQUENCE.indexOf(completedStage);
+                    if (currentIndex >= 0 && currentIndex < STAGE_SEQUENCE.length - 1) {
+                        const nextStage = STAGE_SEQUENCE[currentIndex + 1];
+                        const sessionKey = this.getCurrentSessionKey();
+                        
+                        this.writingWorkflow.hydrateTask(sessionKey, currentTask);
+                        this.writingWorkflow.updateStage(sessionKey, nextStage);
+                        this.sessionManager.setCurrentWritingTask(currentTask);
+                        
+                        this.refreshWritingTaskPanel();
+                        this.addSystemNotice(`Stage **${completedStage}** completed. Advancing to **${nextStage}**.`);
+                    } else if (currentIndex === STAGE_SEQUENCE.length - 1) {
+                        this.updateCurrentWritingTaskStatus('completed');
+                    }
+                }
+            }
+
             let report: CitationCoverageReport | null = null;
             if (pendingMeta?.requiresCitationCheck) {
                 report = this.citationQualityService.evaluate(lastMessage.content);
@@ -326,6 +415,13 @@ export class OpenCodeChatView extends ItemView {
         if (status.type === 'busy') {
             this.isProcessing = true;
             this.chatInput.setProcessing(true);
+        } else if (status.type === 'idle') {
+            this.isProcessing = false;
+            this.chatInput.setProcessing(false);
+            this.messageContainer.hideThinking();
+        } else if (status.type === 'retry') {
+            this.messageContainer.hideThinking();
+            this.messageContainer.appendToAssistantMessage(`\n\n_Retrying (${status.attempt}): ${status.message}_`);
         }
     }
 
@@ -1012,6 +1108,10 @@ export class OpenCodeChatView extends ItemView {
     }
 
     loadSession(sessionId: string) {
+        if (this.isProcessing) {
+            this.handleStop();
+        }
+        
         const switched = this.sessionManager.switchSession(sessionId);
         if (!switched) {
             console.error('OpenCodeChatView: Failed to switch to session:', sessionId);
@@ -1120,5 +1220,27 @@ export class OpenCodeChatView extends ItemView {
             this.writingTaskPanel = null;
         }
         this.unsubscribeFromServer();
+    }
+
+    private handleExportWeChat() {
+        const task = this.sessionManager.getCurrentWritingTask();
+        if (!task || !task.currentDraftVersionId) {
+            new Notice('No active draft to export.');
+            return;
+        }
+
+        const draft = task.draftVersions.find(v => v.id === task.currentDraftVersionId);
+        if (!draft) {
+            new Notice('Draft version content not found.');
+            return;
+        }
+
+        const modal = new WeChatStyleModal(this.app, (style) => {
+            const safeTitle = task.title.replace(/[^a-zA-Z0-9\u4e00-\u9fa5-_]/g, '').slice(0, 50);
+            const filename = `${safeTitle} - WeChat ${style}`;
+            // Use empty sourcePath - images with relative paths won't resolve but absolute paths will work
+            this.weChatExporter.exportToHtml(draft.content, style, filename, '');
+        });
+        modal.open();
     }
 }
