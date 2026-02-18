@@ -18,7 +18,17 @@ Native OpenCode chat inside Obsidian with multi-session support, streaming outpu
 | Build command | `npm run build` |
 | Dev watch command | `npm run dev` |
 
-For fully scripted build/install steps, see [`instruction.md`](./instruction.md).
+For fully scripted build/install steps, see [`docs/development-setup.md`](./docs/development-setup.md).
+
+## Documentation
+
+| Document | Description |
+|----------|-------------|
+| [User Guide](./docs/user-guide.md) | Complete user manual with tutorials |
+| [CHANGELOG](./CHANGELOG.md) | Version history and release notes |
+| [Contributing Guide](./CONTRIBUTING.md) | How to contribute to this project |
+| [Features](./FEATURES.md) | Feature matrix and roadmap |
+| [MEMORY.md](./MEMORY.md) | Development history and key decisions |
 
 ## Current Capabilities
 
