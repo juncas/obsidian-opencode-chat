@@ -1,16 +1,19 @@
 import { App } from 'obsidian';
 
+export type ServerStatus = 'connecting' | 'connected' | 'disconnected';
+
 export class ChatInput {
     private containerEl: HTMLElement;
     private inputWrapperEl: HTMLElement;
     private inputEl: HTMLTextAreaElement;
     private sendButtonEl: HTMLButtonElement;
     private stopButtonEl: HTMLButtonElement | null = null;
+    private statusDotEl: HTMLElement | null = null;
     private onSubmit: (command: string) => Promise<void>;
     private onStop: () => void;
     private commandHistory: string[] = [];
     private historyIndex: number = -1;
-    private tempInput: string = ''; // Store current input when navigating history
+    private tempInput: string = '';
     private mentionMenuEl: HTMLElement;
     private mentionCandidates: string[] = [];
     private mentionSelectedIndex: number = 0;
@@ -38,6 +41,15 @@ export class ChatInput {
         // Create wrapper for flex layout
         this.inputWrapperEl = inputContainer.createEl('div', {
             cls: 'claude-chat-input-wrapper',
+        });
+
+        // Status dot (left side of input)
+        this.statusDotEl = this.inputWrapperEl.createEl('div', {
+            cls: 'claude-status-dot claude-status-dot-connecting',
+            attr: {
+                'aria-label': 'Connecting to OpenCode...',
+                'title': 'Connecting to OpenCode...',
+            },
         });
 
         this.inputEl = this.inputWrapperEl.createEl('textarea', {
@@ -462,5 +474,35 @@ export class ChatInput {
 
     private isMentionMenuOpen(): boolean {
         return this.mentionMenuEl.style.display !== 'none' && this.mentionCandidates.length > 0;
+    }
+
+    setStatus(status: ServerStatus, tooltip?: string): void {
+        if (!this.statusDotEl) return;
+
+        this.statusDotEl.classList.remove(
+            'claude-status-dot-connecting',
+            'claude-status-dot-connected',
+            'claude-status-dot-disconnected'
+        );
+
+        let title: string;
+        switch (status) {
+            case 'connected':
+                this.statusDotEl.classList.add('claude-status-dot-connected');
+                title = tooltip || 'Connected to OpenCode';
+                break;
+            case 'disconnected':
+                this.statusDotEl.classList.add('claude-status-dot-disconnected');
+                title = tooltip || 'Disconnected from OpenCode';
+                break;
+            case 'connecting':
+            default:
+                this.statusDotEl.classList.add('claude-status-dot-connecting');
+                title = tooltip || 'Connecting to OpenCode...';
+                break;
+        }
+
+        this.statusDotEl.setAttribute('aria-label', title);
+        this.statusDotEl.setAttribute('title', title);
     }
 }

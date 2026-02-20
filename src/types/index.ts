@@ -2,6 +2,7 @@ import type { WritingTask } from './writing';
 
 export const OPENCODE_CHAT_VIEW_TYPE = 'claude-chat-view';
 export const WECHAT_EXPORT_PREVIEW_VIEW_TYPE = 'wechat-export-preview-view';
+export const UNIFIED_EXPORT_PREVIEW_VIEW_TYPE = 'unified-export-preview-view';
 
 export interface ChatMessage {
     role: 'user' | 'assistant' | 'system';

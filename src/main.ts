@@ -119,6 +119,21 @@ export default class OpenCodeChatPlugin extends Plugin {
             callback: () => this.activateWeChatPreview(),
         });
 
+        // Add command to clear diff highlights
+        this.addCommand({
+            id: 'clear-diff-highlights',
+            name: 'Clear all diff highlights in editor',
+            callback: () => {
+                const leaf = this.app.workspace.getLeavesOfType(OPENCODE_CHAT_VIEW_TYPE)[0];
+                if (leaf) {
+                    const view = leaf.view as any;
+                    if (view.clearDiffHighlights) {
+                        view.clearDiffHighlights();
+                    }
+                }
+            },
+        });
+
         // Add file menu action for WeChat export preview
         this.registerEvent(
             this.app.workspace.on('file-menu', (menu, file: TFile) => {
@@ -348,14 +363,13 @@ export default class OpenCodeChatPlugin extends Plugin {
      * Start a new session (creates a new conversation session)
      */
     startNewSession() {
-        const session = this.sessionManager.createSession(`Session ${this.sessionManager.getSessions().length + 1}`);
         const { workspace } = this.app;
         const existingLeaf = workspace.getLeavesOfType(OPENCODE_CHAT_VIEW_TYPE)[0];
 
         if (existingLeaf) {
             const view = existingLeaf.view as any;
-            if (view.loadSession) {
-                view.loadSession(session.id);
+            if (view.handleClearContext) {
+                view.handleClearContext();
             }
         }
     }

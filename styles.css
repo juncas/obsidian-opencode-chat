@@ -1596,6 +1596,34 @@ body.theme-light .claude-chat-input {
     height: 16px;
 }
 
+/* Clear Context Button */
+.claude-clear-context-btn {
+    display: flex;
+    align-items: center;
+    gap: 6px;
+    padding: 4px 12px;
+    height: 28px;
+    margin-top: 4px;
+    background: transparent;
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 4px;
+    color: var(--text-muted);
+    cursor: pointer;
+    font-size: var(--font-ui-smaller);
+    transition: all 0.15s ease;
+}
+
+.claude-clear-context-btn:hover {
+    background: var(--background-modifier-hover);
+    color: var(--text-normal);
+    border-color: var(--background-modifier-border-hover);
+}
+
+.claude-clear-context-btn svg {
+    width: 14px;
+    height: 14px;
+}
+
 /* ===================================================================
    ACTION BUTTONS - Below input area
    =================================================================== */
@@ -3022,4 +3050,144 @@ body.theme-light .claude-chat-input {
 
 .theme-dark .wechat-preview-content .wechat-article {
     color: var(--text-normal);
+}
+
+/* ===================================================================
+   DIFF HIGHLIGHTS IN EDITOR
+   =================================================================== */
+
+.cm-diff-highlight-added {
+    background-color: rgba(34, 197, 94, 0.2) !important;
+    border-left: 3px solid #22c55e !important;
+}
+
+.cm-diff-highlight-removed {
+    background-color: rgba(239, 68, 68, 0.2) !important;
+    border-left: 3px solid #ef4444 !important;
+}
+
+.cm-diff-highlight-modified {
+    background-color: rgba(234, 179, 8, 0.2) !important;
+    border-left: 3px solid #eab308 !important;
+}
+
+.cm-diff-tooltip {
+    background: var(--background-primary);
+    border: 1px solid var(--background-modifier-border);
+    border-radius: 6px;
+    padding: 8px 12px;
+    margin: 4px 0;
+    font-size: var(--font-ui-smaller);
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    box-shadow: 0 2px 8px rgba(0, 0, 0, 0.1);
+}
+
+.cm-diff-tooltip-before,
+.cm-diff-tooltip-after {
+    display: flex;
+    flex-direction: column;
+    gap: 2px;
+}
+
+.cm-diff-tooltip-label {
+    color: var(--text-muted);
+    font-size: 10px;
+    text-transform: uppercase;
+    letter-spacing: 0.5px;
+}
+
+.cm-diff-tooltip-before code {
+    background: rgba(239, 68, 68, 0.1);
+    color: #ef4444;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: var(--font-monospace);
+}
+
+.cm-diff-tooltip-after code {
+    background: rgba(34, 197, 94, 0.1);
+    color: #22c55e;
+    padding: 2px 6px;
+    border-radius: 4px;
+    font-family: var(--font-monospace);
+}
+
+.cm-diff-tooltip-arrow {
+    color: var(--text-muted);
+    font-size: 16px;
+}
+
+/* Permission dialog - Show in Editor button */
+.claude-permission-btn-editor {
+    background: var(--interactive-accent) !important;
+    color: var(--text-on-accent) !important;
+    margin-right: auto;
+}
+
+.claude-permission-btn-editor:hover {
+    background: var(--interactive-accent-hover) !important;
+}
+
+/* Theme adjustments for diff */
+.theme-dark .cm-diff-highlight-added {
+    background-color: rgba(34, 197, 94, 0.15) !important;
+}
+
+.theme-dark .cm-diff-highlight-removed {
+    background-color: rgba(239, 68, 68, 0.15) !important;
+}
+
+.theme-dark .cm-diff-highlight-modified {
+    background-color: rgba(234, 179, 8, 0.15) !important;
+}
+
+/* ===================================================================
+   STATUS DOT - In input area
+   =================================================================== */
+
+.claude-status-dot {
+    width: 8px;
+    height: 8px;
+    border-radius: 50%;
+    flex-shrink: 0;
+    cursor: pointer;
+    transition: all 0.3s ease;
+    margin-right: 8px;
+    align-self: center;
+}
+
+.claude-status-dot:hover {
+    transform: scale(1.3);
+}
+
+.claude-status-dot-connecting {
+    background: var(--text-muted);
+    animation: claude-status-pulse 1.5s ease-in-out infinite;
+}
+
+.claude-status-dot-connected {
+    background: #22c55e;
+    box-shadow: 0 0 6px rgba(34, 197, 94, 0.5);
+}
+
+.claude-status-dot-disconnected {
+    background: #ef4444;
+    box-shadow: 0 0 4px rgba(239, 68, 68, 0.3);
+}
+
+@keyframes claude-status-pulse {
+    0%, 100% {
+        opacity: 0.5;
+        transform: scale(1);
+    }
+    50% {
+        opacity: 1;
+        transform: scale(1.2);
+    }
+}
+
+.theme-dark .claude-status-dot-connected {
+    box-shadow: 0 0 8px rgba(34, 197, 94, 0.6);
 }

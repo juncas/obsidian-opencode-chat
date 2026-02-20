@@ -2,6 +2,7 @@ import { ItemView, WorkspaceLeaf, Menu, Notice } from 'obsidian';
 import OpenCodeChatPlugin from '../main';
 import { CitationCoverageReport, CitationQualityService } from '../services/CitationQualityService';
 import { ContextResolver } from '../services/ContextResolver';
+import { DiffHighlighter } from '../services/DiffHighlighter';
 import { OpenCodeServer } from '../services/OpenCodeServer';
 import { PublishAssistantService } from '../services/PublishAssistantService';
 import { KnowledgeBaseService } from '../services/KnowledgeBaseService';
@@ -10,7 +11,6 @@ import { WritingWorkflowService } from '../services/WritingWorkflowService';
 import { WeChatExporter } from '../services/WeChatExporter';
 import { ChatInput } from '../ui/ChatInput';
 import { MessageContainer } from '../ui/MessageContainer';
-import { SessionTabs } from '../ui/SessionTabs';
 import { WritingTaskPanel } from '../ui/WritingTaskPanel';
 import { WeChatStyleModal } from '../ui/WeChatStyleModal';
 import { OPENCODE_CHAT_VIEW_TYPE } from '../types';
@@ -59,16 +59,15 @@ export class OpenCodeChatView extends ItemView {
     sessionManager: SessionManager;
     messageContainer: MessageContainer;
     chatInput: ChatInput;
-    sessionTabs: SessionTabs;
     writingTaskPanel: WritingTaskPanel | null = null;
     isProcessing: boolean = false;
-    private statusBadgeEl: HTMLElement | null = null;
     private readonly contextResolver: ContextResolver;
     private readonly writingWorkflow: WritingWorkflowService;
     private readonly citationQualityService: CitationQualityService;
     private readonly publishAssistant: PublishAssistantService;
     private readonly knowledgeBaseService: KnowledgeBaseService;
     private readonly weChatExporter: WeChatExporter;
+    private readonly diffHighlighter: DiffHighlighter;
     private readonly pendingMetaByServerSessionId: Map<string, WorkflowExecutionMeta> = new Map();
     private readonly citationReportBySessionId: Map<string, CitationCoverageReport> = new Map();
 
@@ -98,6 +97,7 @@ export class OpenCodeChatView extends ItemView {
         this.publishAssistant = new PublishAssistantService(plugin.app);
         this.knowledgeBaseService = new KnowledgeBaseService(plugin.app);
         this.weChatExporter = new WeChatExporter(plugin.app);
+        this.diffHighlighter = new DiffHighlighter(plugin.app);
 
         this.boundHandlers = {
             onTextDelta: this.handleTextDelta.bind(this),
@@ -157,19 +157,19 @@ export class OpenCodeChatView extends ItemView {
             cls: 'claude-session-tabs-wrapper',
         });
 
-        this.sessionTabs = new SessionTabs(tabsContainer, {
-            onSessionSelect: (sessionId) => this.loadSession(sessionId),
-            onNewSession: () => this.createNewSession(),
-            onSessionDelete: (sessionId) => this.deleteSession(sessionId),
-            onSessionRename: (sessionId, newName) => this.renameSession(sessionId, newName),
+        const clearContextBtn = tabsContainer.createEl('button', {
+            cls: 'claude-clear-context-btn',
+            attr: { 'aria-label': 'Clear Context and Start New Task' }
         });
-
-        this.updateSessionList();
-
-        this.statusBadgeEl = contentEl.createEl('div', {
-            cls: 'claude-server-status claude-server-status-connecting',
+        clearContextBtn.innerHTML = `
+            <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M3 6h18"></path><path d="M19 6v14c0 1-1 2-2 2H7c-1 0-2-1-2-2V6"></path><path d="M8 6V4c0-1 1-2 2-2h4c1 0 2 1 2 2v2"></path>
+            </svg>
+            <span>Clear Context</span>
+        `;
+        clearContextBtn.addEventListener('click', () => {
+            this.handleClearContext();
         });
-        this.statusBadgeEl.setText('Connecting...');
 
         this.writingTaskPanel = new WritingTaskPanel(contentEl, {
             onStartTask: () => this.queueCommandTemplate('/write start '),
@@ -464,10 +464,15 @@ export class OpenCodeChatView extends ItemView {
         const server = this.server;
         if (!server) return;
 
-        this.messageContainer.addPermissionDialog(request, (response) => {
-            server.approvePermission(request.sessionID, request.id, response).catch((err) => {
-                console.error('OpenCodeChatView: Failed to reply to permission:', err);
-            });
+        this.messageContainer.addPermissionDialog(request, {
+            onReply: (response) => {
+                server.approvePermission(request.sessionID, request.id, response).catch((err) => {
+                    console.error('OpenCodeChatView: Failed to reply to permission:', err);
+                });
+            },
+            onShowInEditor: (diff: FileDiff) => {
+                this.diffHighlighter.showDiffInEditor(diff);
+            },
         });
     }
 
@@ -515,20 +520,12 @@ export class OpenCodeChatView extends ItemView {
     }
 
     private updateStatusBadge(connected: boolean): void {
-        if (!this.statusBadgeEl) return;
-
-        this.statusBadgeEl.classList.remove(
-            'claude-server-status-connected',
-            'claude-server-status-disconnected',
-            'claude-server-status-connecting'
-        );
+        if (!this.chatInput) return;
 
         if (connected) {
-            this.statusBadgeEl.classList.add('claude-server-status-connected');
-            this.statusBadgeEl.setText('Connected');
+            this.chatInput.setStatus('connected');
         } else {
-            this.statusBadgeEl.classList.add('claude-server-status-disconnected');
-            this.statusBadgeEl.setText('Disconnected');
+            this.chatInput.setStatus('disconnected');
         }
     }
 
@@ -575,10 +572,6 @@ export class OpenCodeChatView extends ItemView {
     }
 
     private updateSessionList() {
-        this.sessionTabs.updateSessions(
-            this.sessionManager.getSessions(),
-            this.sessionManager.getCurrentSession()?.id || null
-        );
         this.refreshWritingTaskPanel();
     }
 
@@ -1105,6 +1098,35 @@ export class OpenCodeChatView extends ItemView {
 
     focusInput() {
         this.chatInput.focus();
+    }
+
+    clearDiffHighlights() {
+        this.diffHighlighter.clearAllDiffs();
+    }
+
+    private async handleClearContext(): Promise<void> {
+        if (this.isProcessing) {
+            this.handleStop();
+        }
+
+        if (!confirm('Clear all context and start a new task? This will reset the conversation history.')) {
+            return;
+        }
+
+        const server = this.server;
+        if (server?.connected) {
+            const session = await server.createSession(ASK_PERMISSIONS);
+            this.sessionManager.updateServerSessionId(session.id);
+        }
+
+        this.sessionManager.clearCurrentSession();
+        this.writingWorkflow.hydrateTask(this.getCurrentSessionKey(), null);
+        this.sessionManager.setCurrentWritingTask(null);
+        this.messageContainer.clear();
+        this.refreshWritingTaskPanel();
+        this.chatInput.focus();
+
+        new Notice('Context cleared. Starting fresh conversation.');
     }
 
     loadSession(sessionId: string) {

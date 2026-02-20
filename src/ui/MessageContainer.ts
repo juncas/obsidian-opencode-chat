@@ -2,7 +2,7 @@ import { ChatMessage } from '../types';
 import { MarkdownRenderer, Component, TFile, App, WorkspaceLeaf, Notice } from 'obsidian';
 import { ToolPart, PermissionRequest, PermissionResponse, QuestionRequest, StepStartPart, StepFinishPart, FileDiff } from '../types/opencode';
 import { ToolCallView } from './ToolCallView';
-import { PermissionDialog } from './PermissionDialog';
+import { PermissionDialog, PermissionDialogCallbacks } from './PermissionDialog';
 import { QuestionDialog } from './QuestionDialog';
 import { FileDiffView } from './FileDiffView';
 
@@ -879,11 +879,11 @@ export class MessageContainer {
 
     addPermissionDialog(
         request: PermissionRequest,
-        onReply: (response: PermissionResponse) => void
+        callbacks: PermissionDialogCallbacks
     ): PermissionDialog {
         this.sealCurrentTextSegment();
         const targetEl = this.getFlowTargetEl();
-        const dialog = new PermissionDialog(targetEl, request, onReply);
+        const dialog = new PermissionDialog(targetEl, request, callbacks);
         this.permissionDialogs.set(request.id, dialog);
         this.scrollToBottom();
         return dialog;
